@@ -19,7 +19,6 @@ without it every row fails with "decode failed").
 Deploy:  modal deploy modal_app.py      (see DEPLOY.md)
 """
 
-from __future__ import annotations
 
 import hmac
 import io
@@ -251,7 +250,7 @@ def run_batch_remote(zip_url: str | None = None, zip_bytes: bytes | None = None)
 )
 @modal.asgi_app()
 def web():
-    from fastapi import Body, FastAPI, HTTPException, Request, UploadFile
+    from fastapi import Body, FastAPI, HTTPException, Request, Response, UploadFile
     from fastapi import File as FastFile
 
     api = FastAPI(title="AutoAce voice trial — compute plane")
@@ -291,23 +290,43 @@ def web():
         call = run_batch_remote.spawn(zip_bytes=data)
         return {"call_id": call.object_id, "status": "running"}
 
+    def _json(payload: dict) -> Response:
+        """Serialize explicitly.
+
+        The result envelope embeds `to_csv()` output, which is full of newlines.
+        Returning the dict and letting the framework encode it produced raw
+        control characters inside the JSON string, which `json.loads` tolerates
+        but the browser's strict `JSON.parse` rejects — every successful run
+        broke the dashboard. `json.dumps` escapes them, so serialize here and
+        leave nothing to the framework.
+        """
+        return Response(content=json.dumps(payload), media_type="application/json")
+
     @api.get("/status/{call_id}")
-    def status(request: Request, call_id: str) -> dict:
+    def status(request: Request, call_id: str) -> Response:
         _check(request)
         try:
             call = modal.FunctionCall.from_id(call_id)
         except Exception as exc:
             raise HTTPException(status_code=404, detail=f"unknown call: {exc}") from exc
         try:
-            return call.get(timeout=0)
-        except modal.exception.TimeoutError:
-            return {"status": "running", "call_id": call_id}
-        except modal.exception.OutputExpiredError:
-            return {"status": "error", "error": "result expired; re-run the batch"}
+            return _json(call.get(timeout=0))
         except Exception as exc:
+            name = type(exc).__name__
+            # `get(timeout=0)` signals "still running" by RAISING a timeout.
+            # Which class it raises has moved between Modal versions (builtin
+            # TimeoutError vs modal.exception.TimeoutError vs
+            # FunctionTimeoutError), and catching the wrong one made every
+            # in-flight poll report a failed run instead of progress — the
+            # dashboard would never show a batch completing. Match on the name
+            # so this cannot silently regress on a client upgrade.
+            if "Timeout" in name:
+                return _json({"status": "running", "call_id": call_id})
+            if "OutputExpired" in name:
+                return _json({"status": "error", "error": "result expired; re-run the batch"})
             # The batch function itself raised. Surface it rather than 500ing —
             # a failed run is information, not an outage.
-            return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+            return _json({"status": "error", "error": f"{name}: {exc}"})
 
     return api
 

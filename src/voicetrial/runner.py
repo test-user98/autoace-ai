@@ -66,6 +66,11 @@ class RunResult:
         return json.dumps(
             {
                 "system_version": self.system_version,
+                # The validation report travels with the results. Without it the
+                # downloaded JSON cannot answer "which files were rejected and
+                # why", which is exactly what the brief asks the batch flow to
+                # report.
+                "validation": self.report.to_dict() if self.report else None,
                 "summary": {
                     "total": len(self.rows),
                     "succeeded": len(self.succeeded),
@@ -109,6 +114,10 @@ def run_batch(folder: Path, predictor: Predictor | None = None) -> RunResult:
     for name in report.name_collisions:
         result.rows.append(
             RowResult(name=name, error="filename collides with another file (case-only difference)")
+        )
+    for name in report.duplicate_rows:
+        result.rows.append(
+            RowResult(name=name, error="duplicate manifest row — only the first was processed")
         )
 
     batch_start = time.perf_counter()

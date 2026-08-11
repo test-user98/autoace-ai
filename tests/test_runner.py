@@ -137,3 +137,35 @@ def test_end_to_end_on_the_three_provided_clips():
     for row in result.succeeded:
         Prediction(**row.prediction)
         assert row.expected is not None  # labels.csv parsed for all three
+
+
+def test_json_export_carries_the_validation_report(batch: Path):
+    """Every rejection category must be answerable from the downloaded JSON
+    alone — it is the artifact the evaluator keeps."""
+    make_audio(batch / "good.wav")
+    make_audio(batch / "orphan.wav")
+    (batch / "notes.txt").write_text("x")
+    (batch / "labels.csv").write_text(
+        'name,result_json\ngood.wav,\ngood.wav,\nabsent.wav,\nbad.wav,"{oops"\n'
+    )
+
+    payload = json.loads(run_batch(batch).to_json())
+    validation = payload["validation"]
+
+    assert validation["unmatched_audio"] == ["orphan.wav"]
+    assert validation["unsupported"] == ["notes.txt"]
+    assert validation["missing_audio"] == ["absent.wav", "bad.wav"]
+    assert validation["duplicate_rows"] == ["good.wav"]
+    assert validation["ready"] == ["good.wav"]
+
+
+def test_duplicate_rows_surface_as_failed_rows_too(batch: Path):
+    make_audio(batch / "call_001.wav")
+    (batch / "labels.csv").write_text(
+        "name,result_json\ncall_001.wav,\ncall_001.wav,\n"
+    )
+
+    result = run_batch(batch)
+
+    assert len(result.succeeded) == 1
+    assert any("duplicate manifest row" in r.error for r in result.failed)

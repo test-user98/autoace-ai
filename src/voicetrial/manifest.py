@@ -50,6 +50,24 @@ class BatchReport:
         """A batch is processable if it has at least one item and no fatal error."""
         return bool(self.items) and not self.errors
 
+    def to_dict(self) -> dict:
+        """JSON-safe view. `asdict()` cannot be used — BatchItem.audio_path and
+        `root` are Path objects, which are not JSON-serializable."""
+        return {
+            "ok": self.ok,
+            "labeled": self.labeled,
+            "root": str(self.root) if self.root else None,
+            "ready": [item.name for item in self.items],
+            "missing_audio": self.missing_audio,
+            "unmatched_audio": self.unmatched_audio,
+            "unsupported": self.unsupported,
+            "duplicate_rows": self.duplicate_rows,
+            "name_collisions": self.name_collisions,
+            "bad_labels": [{"name": n, "reason": r} for n, r in self.bad_labels],
+            "errors": self.errors,
+            "summary": self.summary(),
+        }
+
     def summary(self) -> str:
         parts = [f"{len(self.items)} file(s) ready"]
         if self.labeled:

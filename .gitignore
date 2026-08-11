@@ -7,3 +7,12 @@ data/synthetic/
 runs/
 .env
 *.egg-info/
+
+# dashboard (app/)
+node_modules/
+.next/
+next-env.d.ts
+.vercel/
+.env*.local
+tsbuildinfo
+*.tsbuildinfo

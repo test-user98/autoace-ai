@@ -69,7 +69,7 @@ def load(path: Path) -> Audio:
     if not path.is_file():
         raise DecodeError(f"{path.name} does not exist")
 
-    meta = probe(path)
+    probe(path)  # rejects containers with no audio stream before we decode
 
     proc = subprocess.run(
         [
@@ -89,18 +89,13 @@ def load(path: Path) -> Audio:
     if samples.size == 0:
         raise DecodeError(f"{path.name} decoded to zero samples")
 
-    # Prefer the true decoded length over the container's declared duration,
-    # which can be wrong on truncated files.
-    duration_s = samples.size / SAMPLE_RATE
-    declared = meta.get("format", {}).get("duration")
-    if declared is not None:
-        try:
-            if abs(float(declared) - duration_s) > 1.0:
-                pass  # truncated or VBR-misdeclared; decoded length still wins
-        except ValueError:
-            pass
-
-    return Audio(samples=samples, duration_s=duration_s, source_path=path)
+    # Decoded length, not the container's declared duration, which is wrong on
+    # truncated and some VBR files.
+    return Audio(
+        samples=samples,
+        duration_s=samples.size / SAMPLE_RATE,
+        source_path=path,
+    )
 
 
 def channels_are_identical(path: Path, tol: float = 1e-2) -> bool | None:

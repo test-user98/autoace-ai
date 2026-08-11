@@ -176,6 +176,82 @@ def test_bom_and_whitespace_headers_tolerated(batch: Path):
     assert len(report.items) == 1
 
 
+def test_zipped_folder_shape_is_resolved(batch: Path):
+    """`evaluation_batch.zip` extracts to a wrapper dir — the most likely real
+    input shape. Must not hard-fail with 'no CSV manifest found'."""
+    inner = batch / "evaluation_batch"
+    inner.mkdir()
+    make_audio(inner / "call_001.wav")
+    (inner / "labels.csv").write_text("name,result_json\ncall_001.wav,\n")
+
+    report = parse_batch(batch)
+
+    assert report.ok, report.errors
+    assert len(report.items) == 1
+    assert report.root == inner
+
+
+def test_macosx_wrapper_dir_ignored_when_descending(batch: Path):
+    inner = batch / "evaluation_batch"
+    inner.mkdir()
+    (batch / "__MACOSX").mkdir()
+    make_audio(inner / "call_001.wav")
+    (inner / "labels.csv").write_text("name,result_json\ncall_001.wav,\n")
+
+    report = parse_batch(batch)
+
+    assert report.ok, report.errors
+    assert len(report.items) == 1
+
+
+def _fs_is_case_sensitive(folder: Path) -> bool:
+    probe = folder / "_CaseProbe"
+    probe.write_text("x")
+    try:
+        return not (folder / "_caseprobe").exists()
+    finally:
+        probe.unlink()
+
+
+def test_case_only_filename_collision_is_reported_not_silent(batch: Path):
+    """On a case-sensitive filesystem both files are real. Dropping one silently
+    would contradict 'clearly report missing or unmatched files'.
+
+    Skips on macOS (case-insensitive), which is precisely why this defect is
+    invisible locally — the eval container is Linux, where it bites.
+    """
+    if not _fs_is_case_sensitive(batch):
+        pytest.skip("case-insensitive filesystem cannot hold both names")
+
+    make_audio(batch / "call_001.wav")
+    make_audio(batch / "Call_001.wav")
+    (batch / "labels.csv").write_text("name,result_json\ncall_001.wav,\n")
+
+    report = parse_batch(batch)
+
+    assert report.ok
+    # Exactly one wins; the other is reported rather than vanishing.
+    assert len(report.items) == 1
+    assert len(report.name_collisions) == 1
+    reported = set(report.name_collisions) | {report.items[0].name}
+    assert reported == {"call_001.wav", "Call_001.wav"}
+
+
+def test_collision_detection_logic_is_reachable(batch: Path, monkeypatch):
+    """Filesystem-independent proof that the collision branch works, since the
+    test above cannot run on macOS."""
+    make_audio(batch / "call_001.wav")
+    make_audio(batch / "other.wav")
+    (batch / "labels.csv").write_text("name,result_json\ncall_001.wav,\n")
+
+    # Force both real files to normalize to the same key.
+    monkeypatch.setattr("voicetrial.manifest._normalize", lambda name: "same-key")
+
+    report = parse_batch(batch)
+
+    assert len(report.name_collisions) == 1
+
+
 def test_missing_manifest_is_a_batch_level_error(batch: Path):
     make_audio(batch / "call_001.wav")
 

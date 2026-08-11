@@ -40,8 +40,10 @@ class BatchReport:
     unmatched_audio: list[str] = field(default_factory=list)    # file, no CSV row
     unsupported: list[str] = field(default_factory=list)        # wrong extension
     duplicate_rows: list[str] = field(default_factory=list)
+    name_collisions: list[str] = field(default_factory=list)    # differ only by case
     bad_labels: list[tuple[str, str]] = field(default_factory=list)  # (name, reason)
     errors: list[str] = field(default_factory=list)             # batch-level
+    root: Path | None = None  # actual folder used, after descending into a zip dir
 
     @property
     def ok(self) -> bool:
@@ -57,6 +59,7 @@ class BatchReport:
             ("unmatched audio", self.unmatched_audio),
             ("unsupported", self.unsupported),
             ("duplicate rows", self.duplicate_rows),
+            ("name collisions", self.name_collisions),
             ("unparseable labels", self.bad_labels),
         ):
             if seq:
@@ -81,6 +84,28 @@ def find_manifest(folder: Path) -> Path | None:
     return None
 
 
+def _resolve_root(folder: Path) -> Path:
+    """Descend through wrapper directories left by unzipping a folder.
+
+    `evaluation_batch.zip` extracts to `<tmp>/evaluation_batch/...`, so the
+    manifest is one level below where the caller points. Without this, the most
+    likely real-world input shape hard-fails with "no CSV manifest found".
+    """
+    current = folder
+    for _ in range(4):  # bounded; nobody nests a batch deeper than this
+        if find_manifest(current) is not None:
+            return current
+        entries = [
+            p for p in current.iterdir()
+            if not p.name.startswith(".") and p.name != "__MACOSX"
+        ]
+        subdirs = [p for p in entries if p.is_dir()]
+        if len(subdirs) != 1 or any(p.is_file() for p in entries):
+            break
+        current = subdirs[0]
+    return current if find_manifest(current) is not None else folder
+
+
 def parse_batch(folder: Path) -> BatchReport:
     """Validate a batch folder: audio at root plus one CSV manifest."""
     report = BatchReport()
@@ -89,6 +114,9 @@ def parse_batch(folder: Path) -> BatchReport:
     if not folder.is_dir():
         report.errors.append(f"{folder} is not a directory")
         return report
+
+    folder = _resolve_root(folder)
+    report.root = folder
 
     audio_by_key: dict[str, Path] = {}
     for path in sorted(folder.iterdir()):
@@ -99,7 +127,14 @@ def parse_batch(folder: Path) -> BatchReport:
         if path.suffix.casefold() not in SUPPORTED_SUFFIXES:
             report.unsupported.append(path.name)
             continue
-        audio_by_key[_normalize(path.name)] = path
+        key = _normalize(path.name)
+        if key in audio_by_key:
+            # Two files differing only in case. On a case-sensitive filesystem
+            # both are real; silently dropping one would contradict the brief's
+            # "clearly report missing or unmatched files".
+            report.name_collisions.append(path.name)
+            continue
+        audio_by_key[key] = path
 
     manifest = find_manifest(folder)
     if manifest is None:

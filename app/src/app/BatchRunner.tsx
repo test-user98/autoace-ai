@@ -21,6 +21,10 @@ export default function BatchRunner() {
   const [result, setResult] = useState<RunEnvelope | null>(null);
 
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // setInterval does not serialize async callbacks: a poll slower than POLL_MS
+  // would overlap the next one, and two polls both seeing "done" would each try
+  // to delete the blob.
+  const polling = useRef(false);
 
   const stopTimer = useCallback(() => {
     if (timer.current) clearInterval(timer.current);
@@ -75,8 +79,11 @@ export default function BatchRunner() {
     setPhase("running");
     const startedAt = Date.now();
     stopTimer();
+    polling.current = false;
     timer.current = setInterval(async () => {
       setElapsed(Math.round((Date.now() - startedAt) / 1000));
+      if (polling.current) return;
+      polling.current = true;
       try {
         const query = new URLSearchParams({ callId, blobUrl });
         const response = await fetch(`/api/status?${query.toString()}`);
@@ -98,6 +105,8 @@ export default function BatchRunner() {
         stopTimer();
         setPhase("error");
         setMessage(`Lost contact with the batch: ${(error as Error).message}`);
+      } finally {
+        polling.current = false;
       }
     }, POLL_MS);
   }

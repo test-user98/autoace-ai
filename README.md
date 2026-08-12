@@ -5,9 +5,11 @@ air, and serves it through a hosted dashboard that accepts a batch ZIP.
 
 ## Status — read this first
 
-**Six of nine fields are implemented. `emotional_tone` and `emotional_intensity`
-are NOT.** They return `neutral`/`low` as a visible placeholder rather than a
-guess. Nothing in this repo predicts emotion today.
+**All nine fields are implemented.** Strength varies by field, and the table
+below reports each one honestly against its baseline. `emotional_tone` is the
+weakest: the SER model's valence axis orders correctly on RAVDESS (24 actors)
+but its absolute scale shifts between studio and phone-codec audio, and 3.96
+minutes of labelled audio cannot calibrate a five-class boundary.
 
 Accuracy on the three provided clips: **13/18 field-predictions correct (72%)**.
 
@@ -19,7 +21,8 @@ Accuracy on the three provided clips: **13/18 field-predictions correct (72%)**.
 | `audio_quality` | GBM | 3/3 | 0.759 | 0.560 |
 | `speaker_overlap_present` | pyannote/segmentation-3.0 | 3/3 | — | 0.586 |
 | `long_silence_present` | pyannote/segmentation-3.0 | 3/3 | — | 0.517 |
-| `emotional_tone` / `_intensity` | **not implemented** | — | — | — |
+| `emotional_intensity` | SER arousal | **3/3** | RAVDESS AUC 0.770 | — |
+| `emotional_tone` | SER valence | 1/3 | RAVDESS AUC 0.747 | — |
 
 Synthetic figures use **root-carrier holdout** — each fold trains without one
 entire real recording. Random splits and variant-level splits both leak and
@@ -97,7 +100,9 @@ field. Seeds are fixed; runs are reproducible.
 
 ## Known limitations
 
-- **Tone is not implemented.** Two of nine fields are placeholders.
+- **Tone is the weakest field.** Bounded by labelled data, not architecture.
+- **Confidence is not calibrated** — monotonic and honest in direction, but no
+  reliability diagram or ECE exists.
 - **3.96 minutes of real audio exists**, and it is both the carrier for the
   synthetic set and the only real test data. Synthetic numbers measure whether
   the detectors work in principle; they do not predict hidden-set accuracy.

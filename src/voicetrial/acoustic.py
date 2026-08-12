@@ -14,9 +14,13 @@ Two engines, chosen per field by what actually generalises:
   natively. This is the one place where a pretrained model is not a shortcut but
   the only correct answer.
 
-`emotional_tone` and `_intensity` remain unimplemented and are reported as
-`neutral`/`low` with confidence 0.0. That is deliberate: a guess dressed as a
-prediction is worse than a visible gap.
+`emotional_tone` and `_intensity` come from a dimensional SER model (see
+`tone.py`). Intensity is the stronger of the two: arousal is validated
+independently on RAVDESS (24 actors, AUC 0.770) and is 3/3 on the provided
+clips. Tone is the weakest field in the system — the valence axis orders
+correctly on RAVDESS but its absolute scale shifts between studio and
+phone-codec audio, and 3.96 minutes of labelled audio cannot calibrate a
+five-class boundary.
 """
 
 from __future__ import annotations
@@ -144,7 +148,12 @@ def _speaker_map(audio: Audio) -> tuple[float, float, str] | None:
 
 
 class AcousticPredictor:
-    """Six real fields; tone deliberately left unimplemented."""
+    """All nine schema fields.
+
+    Six acoustic fields from DSP features and per-field gradient-boosted models;
+    overlap and silence from pretrained pyannote; tone and intensity from a
+    dimensional SER model. Every value carries its provenance in `evidence`.
+    """
 
     version = SYSTEM_VERSION
 
@@ -235,8 +244,10 @@ class AcousticPredictor:
                 "source": f"SER unavailable ({type(exc).__name__}) — placeholder",
             }
 
-        # Confidence reflects only what was actually measured. The two tone
-        # fields are unimplemented, so the ceiling is 6/8 of the schema.
+        # Confidence is the mean model probability, scaled down because tone
+        # carries materially more uncertainty than the acoustic fields. It is
+        # monotonic and honest in direction but NOT calibrated — there is no
+        # reliability diagram or ECE behind it. Stated as a gap in MEMO.md.
         probs = [
             e["probability"]
             for e in evidence["fields"].values()

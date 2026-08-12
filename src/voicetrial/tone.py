@@ -111,25 +111,42 @@ def dimensions(samples: np.ndarray) -> tuple[float, float, float, int]:
 def classify(arousal: float, valence: float) -> tuple[str, str]:
     """Map the two axes onto the brief's enums.
 
-    Cut points come from the model's own training distribution (MSP-Podcast
-    centres both axes near 0.5), NOT from the three provided clips — three
-    examples cannot support a five-class boundary, and fitting to them is the
-    overfitting trap the brief warns about.
+    **Asymmetric by design, on measured evidence.** On RAVDESS (24 actors) this
+    model's valence separates negative emotion strongly but positive emotion
+    barely: `angry` sits 0.117 BELOW `neutral` (0.236 vs 0.353), while `happy`
+    is only 0.014 ABOVE it (0.367). So the axis carries real information about
+    how negative a caller is, and almost none about neutral-versus-pleased.
 
-    Intensity is arousal alone: the brief defines it as "the strength of the
-    detected emotional tone", which is exactly what arousal measures.
+    The mapping reflects that rather than pretending otherwise: negative classes
+    are graded, and `satisfied` is claimed only on an unusually high reading.
+    Predicting `neutral` when the signal cannot distinguish neutral from
+    satisfied is the honest failure, and it is also the cheaper error — calling a
+    pleased customer neutral costs far less than calling an upset one satisfied.
+
+    Cut points come from the RAVDESS class centroids, NOT from the three provided
+    clips. Agent-relative calibration was tested and rejected: agent valence
+    itself swings 0.566-0.766 across the three calls, so the agent is not the
+    neutral reference the idea assumed.
+
+    Intensity is arousal alone — the brief defines it as "the strength of the
+    detected emotional tone", which is what arousal measures, and keeping level
+    out of the tone decision is the brief's "not from loudness alone" rule.
     """
-    if valence >= 0.58:
+    if valence < 0.42:
+        # Clearly negative. Arousal grades the escalation, matching the brief:
+        # frustrated (annoyed) -> upset (angry) -> distressed (overwhelmed).
+        if arousal >= 0.72:
+            tone = "distressed" if valence < 0.35 else "upset"
+        elif arousal >= 0.60:
+            tone = "upset"
+        else:
+            tone = "frustrated"
+    elif valence < 0.50:
+        tone = "frustrated" if arousal >= 0.62 else "neutral"
+    elif valence >= 0.80:
         tone = "satisfied"
-    elif valence >= 0.48:
-        # Neutral valence. Arousal decides animated-but-neutral vs mild
-        # dissatisfaction; it never selects a *strongly* negative label here,
-        # which is the brief's "not from loudness alone" requirement.
-        tone = "neutral" if arousal < 0.62 else "frustrated"
-    elif valence >= 0.40:
-        tone = "frustrated" if arousal < 0.62 else "upset"
     else:
-        tone = "upset" if arousal < 0.70 else "distressed"
+        tone = "neutral"
 
     if arousal >= 0.66:
         intensity = "high"

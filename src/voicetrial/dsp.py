@@ -243,14 +243,34 @@ def measure(x: np.ndarray) -> Analysis:
     # noise, not dropouts.
     # Relative to the speech level, not to an absolute floor: a dropout is a
     # hole in speech that is present, which stays true under background noise.
+    # Dropouts are SHORT holes punched into speech. Counting every frame below
+    # the speech median instead counted natural conversational pauses: on the
+    # real clips that read 62.9% / 21.9% / 35.4% and drove all three to
+    # `severely_impaired`, when all three are labelled `clear`. Packet loss lasts
+    # tens of milliseconds; a turn-taking pause lasts hundreds. Bound the run
+    # length and the metric measures the fault instead of the conversation.
     speech_span = np.where(mask)[0]
+    dropout_pct = 0.0
+    dropout_events = 0.0
     if speech_span.size:
         lo, hi = speech_span[0], speech_span[-1] + 1
-        interior = frame_db[lo:hi]
         ref = float(np.median(frame_db[mask]))
-        dropout_pct = float((interior < ref - 25.0).mean() * 100.0)
-    else:
-        dropout_pct = 0.0
+        quiet = frame_db[lo:hi] < ref - 25.0
+        max_run = int(0.25 * SAMPLE_RATE / HOP)  # 250 ms ceiling
+        held = 0
+        run = 0
+        for q in quiet.tolist():
+            if q:
+                run += 1
+            else:
+                if 0 < run <= max_run:
+                    held += run
+                    dropout_events += 1
+                run = 0
+        if 0 < run <= max_run:
+            held += run
+            dropout_events += 1
+        dropout_pct = float(held / max(len(quiet), 1) * 100.0)
 
     # Band loss (muffling / codec) shows up as collapsed energy above 3.4 kHz.
     # The 95%-cumulative bandwidth measure could not see it — most speech energy
@@ -276,12 +296,6 @@ def measure(x: np.ndarray) -> Analysis:
 
     # Count dropout *events*, not just their duration — a few long gaps and many
     # short ones are different failures.
-    if speech_span.size:
-        holes = frame_db[lo:hi] < (float(np.median(frame_db[mask])) - 25.0)
-        dropout_events = float(np.count_nonzero(np.diff(holes.astype(int)) == 1))
-    else:
-        dropout_events = 0.0
-
     level_range_db = float(np.percentile(frame_db, 95) - np.percentile(frame_db, 5))
 
     # --- noise character, measured on the RESIDUAL only ---------------------

@@ -180,7 +180,21 @@ def customer_audio(samples: np.ndarray, token: str | None = None) -> tuple[np.nd
         if pipe is None:
             return samples, "whole clip (diarization repo not accessible)"
         wav = torch.from_numpy(samples).unsqueeze(0)
-        ann = pipe({"waveform": wav, "sample_rate": SAMPLE_RATE})
+        # A phone call has exactly two parties. Without this the diarizer split
+        # call_001 into FOUR speakers and "the customer" came back as a 3.9 s
+        # fragment of a 31 s call — a shard of one person, not a speaker. Pinning
+        # the count is domain knowledge we actually have, not a tuned parameter.
+        try:
+            result = pipe(
+                {"waveform": wav, "sample_rate": SAMPLE_RATE}, num_speakers=2
+            )
+        except TypeError:
+            result = pipe({"waveform": wav, "sample_rate": SAMPLE_RATE})
+        # pyannote 4.x returns DiarizeOutput, not an Annotation. The classic
+        # `.itertracks` lives on `.speaker_diarization`; calling it on the
+        # wrapper raises AttributeError, which a broad except turns into a
+        # silent fallback.
+        ann = getattr(result, "speaker_diarization", result)
 
         spans: dict[str, list[tuple[float, float]]] = {}
         for turn, _, spk in ann.itertracks(yield_label=True):
@@ -254,19 +268,26 @@ def _customer_by_pitch(samples: np.ndarray) -> tuple[np.ndarray, str]:
     return keep, f"pitch-split customer (F0~{mean_f0:.0f}Hz, {keep.size/SAMPLE_RATE:.1f}s)"
 
 
-def analyse(samples: np.ndarray, diarize: bool = False) -> ToneResult:
+def analyse(samples: np.ndarray, diarize: bool = True) -> ToneResult:
     """Tone and intensity.
 
-    `diarize` defaults to **False**. Customer isolation via the pitch-split
-    fallback was measured and made accuracy WORSE (tone 1/3 -> 0/3): valence
-    moved the wrong way at both ends, and call_001's "customer" came back at
-    F0 ~287 Hz, implausible for conversational speech, so the split grabbed the
-    wrong frames. Shipping a change that measurably degrades results would be
-    reasoning from a hypothesis instead of from evidence.
+    `diarize` defaults to **True**, on evidence rather than on reasoning.
 
-    The hypothesis is NOT disproven — the instrument was too crude to test it.
-    Re-enable once pyannote/speaker-diarization-community-1 is accepted and real
-    turn boundaries are available.
+    With real two-speaker diarization, isolating the customer widened valence
+    separation across the three clips **3.7x** — from a 0.09 range (0.502-0.596)
+    to 0.33 (0.438-0.766) — and corrected the hardest case: call_001 moved from
+    `satisfied` (the opposite pole) to `upset` (correct), valence 0.596 -> 0.438.
+
+    Headline accuracy is 1/3 either way, so this is shipped for SIGNAL QUALITY,
+    not for a score. Averaging emotion across a calm agent and an escalated
+    customer compresses exactly the axis the brief asks about; the remaining
+    error is in the threshold mapping, not the measurement.
+
+    Two earlier attempts failed for instrument reasons, not because the idea was
+    wrong: a pitch-split fallback (call_001's "customer" came back at F0 ~287 Hz)
+    and 4-way over-segmentation (a 3.9 s "customer" in a 31 s call). Pinning
+    `num_speakers=2` fixed the second — a phone call has two parties, which is
+    domain knowledge rather than a tuned parameter.
     """
     speech, source = (customer_audio(samples) if diarize else (samples, "whole clip"))
     arousal, dominance, valence, n = dimensions(speech)

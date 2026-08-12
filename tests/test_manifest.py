@@ -269,3 +269,46 @@ def test_manifest_without_name_column_is_a_batch_level_error(batch: Path):
 
     assert not report.ok
     assert "no 'name' column" in report.errors[0]
+
+
+# --- regressions from the independent adversarial review ---------------------
+
+def test_stray_file_beside_wrapper_dir_still_resolves(batch: Path):
+    """A README.txt next to evaluation_batch/ used to abort the whole batch."""
+    inner = batch / "evaluation_batch"
+    inner.mkdir()
+    make_audio(inner / "call_001.wav")
+    (inner / "labels.csv").write_text("name,result_json\ncall_001.wav,\n")
+    (batch / "README.txt").write_text("notes")
+
+    report = parse_batch(batch)
+
+    assert report.ok, report.errors
+    assert len(report.items) == 1
+
+
+def test_oversized_result_json_does_not_kill_the_batch(batch: Path):
+    """csv's 128 KB field cap raised _csv.Error and aborted everything."""
+    make_audio(batch / "good.wav")
+    make_audio(batch / "big.wav")
+    huge = "x" * 200_000
+    (batch / "labels.csv").write_text(
+        f'name,result_json\ngood.wav,\nbig.wav,"{huge}"\n'
+    )
+
+    report = parse_batch(batch)
+
+    assert report.ok, report.errors
+    assert any(i.name == "good.wav" for i in report.items)
+
+
+def test_non_utf8_manifest_does_not_kill_the_batch(batch: Path):
+    make_audio(batch / "call_001.wav")
+    (batch / "labels.csv").write_bytes(
+        "name,result_json\ncall_001.wav,caf\xe9\n".encode("latin-1")
+    )
+
+    report = parse_batch(batch)
+
+    assert report.ok, report.errors
+    assert len(report.items) == 1

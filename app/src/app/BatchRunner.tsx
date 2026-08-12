@@ -47,7 +47,7 @@ export default function BatchRunner() {
       // function: the body limit there is ~4.5 MB and one provided clip alone is
       // 2.8 MB, so the function path cannot work for a batch.
       const blob = await upload(file.name, file, {
-        access: "public",
+        access: "private",
         handleUploadUrl: "/api/blob/upload",
         multipart: true,
         contentType: file.type || "application/zip",

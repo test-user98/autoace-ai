@@ -16,7 +16,8 @@
  */
 
 import { readFileSync } from "node:fs";
-import { put, del } from "@vercel/blob";
+import { head, del } from "@vercel/blob";
+import { upload } from "@vercel/blob/client";
 
 const BASE = (process.env.DASHBOARD_URL ?? "").replace(/\/+$/, "");
 const USER = process.env.DASHBOARD_USER ?? "admin";
@@ -69,14 +70,35 @@ async function main() {
   check("correct password issues a session cookie", cookie.includes("session="));
   if (!cookie) throw new Error("no session cookie — cannot continue");
 
-  console.log("\n=== 2. upload to the PRIVATE blob store ===");
+  console.log("\n=== 2. upload via the APP'S OWN route (the path a user takes) ===");
+
+  // Guard against the exact failure this check previously missed: the product
+  // uploaded with access:"public" against a private store, so every browser
+  // upload hung forever — while this script called put() directly with the
+  // read-write token and reported ALL CHECKS PASSED. A check that exercises a
+  // path no user takes is worse than no check. Pin the two together.
+  const runnerSrc = readFileSync(new URL("../src/app/BatchRunner.tsx", import.meta.url), "utf8");
+  const runnerAccess = runnerSrc.match(/access:\s*"(\w+)"/)?.[1];
+  check(
+    "this check uploads the same way the product does",
+    runnerAccess === "private",
+    `BatchRunner.tsx uses access:"${runnerAccess}"`,
+  );
+
   const bytes = readFileSync(ZIP);
-  const blob = await put(`batches/e2e-${Date.now()}.zip`, bytes, {
-    access: "private",
-    addRandomSuffix: true,
-    contentType: "application/zip",
-  });
-  check("uploaded", Boolean(blob.url), `${(bytes.length / 1e6).toFixed(2)} MB`);
+  let blob;
+  try {
+    blob = await upload(`batches/e2e-${Date.now()}.zip`, bytes, {
+      access: "private",
+      handleUploadUrl: `${BASE}/api/blob/upload`,
+      headers: { cookie }, // the browser sends this automatically
+      contentType: "application/zip",
+    });
+  } catch (err) {
+    check("upload through /api/blob/upload succeeded", false, err.message);
+    throw err;
+  }
+  check("upload through /api/blob/upload succeeded", Boolean(blob.url), `${(bytes.length / 1e6).toFixed(2)} MB`);
 
   const anonFetch = await fetch(blob.url, { redirect: "manual" });
   check(
@@ -140,9 +162,16 @@ async function main() {
   }
 
   console.log("\n=== 6. cleanup ===");
+  // An anonymous GET returns 403 on a private blob whether or not it was
+  // deleted, so that assertion could never fail. Ask the store directly.
   await del(blob.url);
-  const after = await fetch(blob.url, { redirect: "manual" });
-  check("blob deleted after the run", after.status !== 200, `GET returned ${after.status}`);
+  let stillThere = true;
+  try {
+    await head(blob.url);
+  } catch {
+    stillThere = false;
+  }
+  check("blob is really gone from the store", !stillThere);
 }
 
 main()

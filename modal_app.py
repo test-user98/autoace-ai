@@ -131,15 +131,26 @@ def _safe_extract(data: bytes, dest: Path) -> None:
         for info in zf.infolist():
             if info.is_dir():
                 continue
-            target = (dest / info.filename).resolve()
+            try:
+                target = (dest / info.filename).resolve()
+            except (OSError, ValueError):
+                continue  # unrepresentable name; skip the member, keep the batch
             if not target.is_relative_to(root):
                 continue  # zip-slip attempt; skip rather than fail the batch
             total += info.file_size
             if total > MAX_UNPACKED_BYTES:
                 raise ValueError("zip expands beyond the unpacked size limit")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with zf.open(info) as src, open(target, "wb") as out:
-                shutil.copyfileobj(src, out)
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(info) as src, open(target, "wb") as out:
+                    shutil.copyfileobj(src, out)
+            except OSError:
+                # e.g. ENAMETOOLONG on a >255-byte filename, which a real export
+                # can produce. Skipping one member costs one file; raising here
+                # would fail the whole batch and violate the brief's explicit
+                # "a single malformed file should not cause the entire batch to
+                # fail". The file simply shows up as unmatched in the report.
+                continue
 
 
 def _report_dict(report) -> dict | None:

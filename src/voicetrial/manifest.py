@@ -22,6 +22,11 @@ from .ingest import SUPPORTED_SUFFIXES
 NAME_COL = "name"
 LABEL_COL = "result_json"
 
+# csv defaults to a 128 KB field cap and raises _csv.Error above it, which was
+# aborting whole batches. A result_json for a 9-field schema is ~300 bytes, so
+# anything near this is malformed — but it should fail that row, not the batch.
+csv.field_size_limit(16 * 1024 * 1024)
+
 
 @dataclass
 class BatchItem:
@@ -118,8 +123,12 @@ def _resolve_root(folder: Path) -> Path:
             if not p.name.startswith(".") and p.name != "__MACOSX"
         ]
         subdirs = [p for p in entries if p.is_dir()]
-        if len(subdirs) != 1 or any(p.is_file() for p in entries):
+        if len(subdirs) != 1:
             break
+        # Descend even when stray files sit beside the wrapper directory. A
+        # README.txt or a second CSV next to `evaluation_batch/` previously
+        # aborted the entire batch with "no CSV manifest found" — a plausible
+        # accidental input producing zero results.
         current = subdirs[0]
     return current if find_manifest(current) is not None else folder
 
@@ -163,7 +172,14 @@ def parse_batch(folder: Path) -> BatchReport:
 
     try:
         text = manifest.read_text(encoding="utf-8-sig")  # tolerate a BOM
-    except (OSError, UnicodeDecodeError) as exc:
+    except UnicodeDecodeError:
+        # A latin-1 manifest (Excel on Windows) previously failed the whole
+        # batch. Filenames are ASCII in practice, so lossy decoding costs at
+        # most a mangled character in a label, not the run.
+        text = manifest.read_text(encoding="utf-8-sig", errors="replace")
+        report.errors_nonfatal = getattr(report, "errors_nonfatal", [])
+        report.errors_nonfatal.append(f"{manifest.name} is not valid UTF-8; decoded leniently")
+    except OSError as exc:
         report.errors.append(f"cannot read {manifest.name}: {exc}")
         return report
 
@@ -184,7 +200,15 @@ def parse_batch(folder: Path) -> BatchReport:
     report.labeled = label_key is not None
 
     seen: set[str] = set()
-    for row in reader:
+    rows: list[dict] = []
+    try:
+        rows = list(reader)
+    except csv.Error as exc:
+        # A malformed CSV should degrade to "no rows parsed", never take the
+        # process down. Files present in the folder are still reported.
+        report.errors.append(f"{manifest.name} could not be parsed: {exc}")
+
+    for row in rows:
         raw_name = (row.get(name_key) or "").strip()
         if not raw_name:
             continue

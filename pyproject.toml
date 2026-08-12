@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Emotional tone and background noise analysis for production call audio"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "faster-whisper>=1.2.1",
     "joblib>=1.5.3",
     "numpy>=2.0",
     "pyannote-audio>=3.3",
@@ -11,6 +12,7 @@ dependencies = [
     "scikit-learn>=1.9.0",
     "torch>=2.4",
     "torchaudio>=2.4",
+    "transformers>=5.15.0",
 ]
 
 [project.optional-dependencies]

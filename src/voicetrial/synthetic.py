@@ -213,6 +213,18 @@ def render(
         for i in np.where(kill)[0]:
             x[i * fr:(i + 1) * fr] = 0.0
 
+    # Every real call carries a floor: line noise, breathing, room tone. The
+    # generator previously left the no-noise condition at digital silence
+    # (~-94.6 dBFS), a level that does not occur on a telephone channel. The
+    # three real clips measure -65 to -67 dBFS, i.e. in the GAP between the
+    # synthetic `none` class (-94.6) and `low` (-53.7) — so every real clip fell
+    # nearest `low` and severity predicted `low` for all of them regardless of
+    # truth. Adding a realistic floor to EVERY clip removes an artefact the
+    # classifier was using as a shortcut; it is not a decision threshold.
+    floor = _hiss(x.size, rng) + 0.3 * _road(x.size, rng)
+    target_floor_db = float(rng.uniform(-70.0, -60.0))
+    x = x + floor * ((10 ** (target_floor_db / 20.0)) / _rms(floor))
+
     if cond.noise_present and cond.snr_db is not None:
         maker = NOISE_MAKERS.get(cond.noise_type)
         if cond.noise_type == "television":

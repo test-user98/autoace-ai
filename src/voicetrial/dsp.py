@@ -59,6 +59,13 @@ class Analysis:
     residual_modulation_4hz: float = 0.0
     residual_harmonicity: float = 0.0
     overlap_frames_pct: float = 0.0
+    hf_ratio: float = 0.0
+    rolloff_85_hz: float = 0.0
+    rolloff_99_hz: float = 0.0
+    crest_db: float = 0.0
+    dropout_events: float = 0.0
+    spectral_tilt: float = 0.0
+    level_range_db: float = 0.0
 
 
 def _frames(x: np.ndarray) -> np.ndarray:
@@ -72,6 +79,26 @@ def _frames(x: np.ndarray) -> np.ndarray:
 
 def _db(v: np.ndarray | float) -> np.ndarray | float:
     return 10.0 * np.log10(np.asarray(v) + EPS)
+
+
+def _voicing(fr: np.ndarray) -> np.ndarray:
+    """Per-frame periodicity strength (0..1) from normalised autocorrelation.
+
+    This is what separates *speech* from *sound*. Energy alone cannot: additive
+    noise lifts a silent gap above any energy threshold, which is exactly why
+    long-silence detection scored AUC 0.767 on gaps of known length. Voiced
+    speech has a strong autocorrelation peak at its pitch period; noise does not,
+    however loud it is.
+    """
+    x = fr - fr.mean(axis=1, keepdims=True)
+    n = x.shape[1]
+    spec = np.fft.rfft(x, n=2 * n, axis=1)
+    ac = np.fft.irfft(spec * np.conj(spec), axis=1)[:, :n]
+    ac = ac / (ac[:, :1] + EPS)
+    lo, hi = int(SAMPLE_RATE / 350), min(int(SAMPLE_RATE / 70), n - 1)
+    if hi <= lo:
+        return np.zeros(x.shape[0])
+    return np.clip(ac[:, lo:hi].max(axis=1), 0.0, 1.0)
 
 
 def voice_activity(x: np.ndarray) -> tuple[np.ndarray, float, float]:
@@ -100,7 +127,10 @@ def voice_activity(x: np.ndarray) -> tuple[np.ndarray, float, float]:
     # Halfway between floor and peak, but never less than 6 dB above the floor:
     # on a clip that is nearly all speech the percentile spread collapses.
     thresh = max(floor + 6.0, floor + 0.35 * (peak - floor))
-    mask = (energy_db > thresh) & ~digital_silence
+    voiced = _voicing(fr) > 0.28
+    # Require both: loud enough AND periodic. Noise poured into a gap satisfies
+    # the first and fails the second, so the gap stays a gap.
+    mask = (energy_db > thresh) & voiced & ~digital_silence
 
     # Hangover: speech tails fall below threshold before the talker stops, and
     # single-frame dropouts inside a word are not silence.
@@ -202,13 +232,48 @@ def measure(x: np.ndarray) -> Analysis:
     # clip's own noise floor, which additive noise raises — so it scored AUC
     # 0.84 for *noise_present*, a field it is unrelated to. It was measuring
     # noise, not dropouts.
+    # Relative to the speech level, not to an absolute floor: a dropout is a
+    # hole in speech that is present, which stays true under background noise.
     speech_span = np.where(mask)[0]
     if speech_span.size:
         lo, hi = speech_span[0], speech_span[-1] + 1
         interior = frame_db[lo:hi]
-        dropout_pct = float((interior < DIGITAL_SILENCE_DBFS).mean() * 100.0)
+        ref = float(np.median(frame_db[mask]))
+        dropout_pct = float((interior < ref - 25.0).mean() * 100.0)
     else:
         dropout_pct = 0.0
+
+    # Band loss (muffling / codec) shows up as collapsed energy above 3.4 kHz.
+    # The 95%-cumulative bandwidth measure could not see it — most speech energy
+    # sits below 1 kHz, so the statistic barely moved when the top was removed.
+    hf = (freqs >= 3400) & (freqs < 8000)
+    sp_pow = speech_spec ** 2
+    hf_ratio = float(sp_pow[hf].sum() / (sp_pow.sum() + EPS))
+
+    # Band edge. The 95% point sits near 1 kHz for all speech and barely moves
+    # when the top is removed, so it could not see muffling; 85% and 99% bracket
+    # the edge far more sharply.
+    cum = np.cumsum(sp_pow)
+    tot = cum[-1] + EPS
+    rolloff_85 = float(freqs[np.searchsorted(cum, 0.85 * tot)])
+    rolloff_99 = float(freqs[np.searchsorted(cum, 0.99 * tot)])
+
+    # Spectral tilt: dB per decade across the speech band. Lowpassing steepens it.
+    band = (freqs >= 300) & (freqs < 7000)
+    tilt = float(np.polyfit(np.log10(freqs[band] + 1.0), _db(sp_pow[band]), 1)[0])
+
+    # Crest factor: clipping flattens peaks, so peak-to-RMS collapses.
+    crest_db = float(_db(np.max(x ** 2) + EPS) - _db((x ** 2).mean() + EPS))
+
+    # Count dropout *events*, not just their duration — a few long gaps and many
+    # short ones are different failures.
+    if speech_span.size:
+        holes = frame_db[lo:hi] < (float(np.median(frame_db[mask])) - 25.0)
+        dropout_events = float(np.count_nonzero(np.diff(holes.astype(int)) == 1))
+    else:
+        dropout_events = 0.0
+
+    level_range_db = float(np.percentile(frame_db, 95) - np.percentile(frame_db, 5))
 
     # --- noise character, measured on the RESIDUAL only ---------------------
     res_mean = residual.mean(axis=0)
@@ -235,7 +300,7 @@ def measure(x: np.ndarray) -> Analysis:
     # Harmonicity separates tonal sources (music, hum) from broadband ones.
     harmonicity = _harmonicity(res_mean)
 
-    overlap_pct = _overlap_ratio(clean, mask)
+    overlap_pct = _overlap_ratio(fr, mask)
 
     return Analysis(
         speech_ratio=speech_ratio,
@@ -252,6 +317,13 @@ def measure(x: np.ndarray) -> Analysis:
         residual_modulation_4hz=modulation,
         residual_harmonicity=harmonicity,
         overlap_frames_pct=overlap_pct,
+        hf_ratio=hf_ratio,
+        rolloff_85_hz=rolloff_85,
+        rolloff_99_hz=rolloff_99,
+        crest_db=crest_db,
+        dropout_events=dropout_events,
+        spectral_tilt=tilt,
+        level_range_db=level_range_db,
     )
 
 
@@ -275,42 +347,24 @@ def _harmonicity(mag: np.ndarray) -> float:
     return float(top / (mag.sum() + EPS))
 
 
-def _overlap_ratio(clean: np.ndarray, mask: np.ndarray) -> float:
-    """Fraction of speech frames showing two concurrent harmonic sources.
+def _overlap_ratio(fr: np.ndarray, mask: np.ndarray) -> float:
+    """Fraction of speech frames whose periodicity is *ambiguous*.
 
-    Heuristic, and honestly a weak one: a single talker produces one harmonic
-    comb, so a second strong, non-multiple periodicity in the low-band cepstrum
-    suggests a second voice. It will over-trigger on speech-like background
-    (a television), which is exactly the failure mode `call_002` is expected to
-    expose — see PLAN.md §9.
+    Counting cepstral peaks scored AUC 0.501 — a coin flip — so it is gone. One
+    talker produces a single clean harmonic comb and a high autocorrelation
+    peak. Two concurrent talkers interfere, and the combined signal is still
+    clearly voiced but markedly less periodic. So the signature of overlap is
+    not "two pitches found" (fragile) but "loud, speech-like, yet only weakly
+    periodic" (robust).
+
+    Known limitation, and the one `call_002` should expose: speech-shaped
+    background such as a television produces the same ambiguity. This detector
+    cannot distinguish a second caller from a television, and the memo says so.
     """
     if not mask.any():
         return 0.0
-    frames = clean[mask]
-    if frames.shape[0] == 0:
+    v = _voicing(fr)[: len(mask)][mask]
+    if v.size == 0:
         return 0.0
-
-    log_spec = np.log(frames + EPS)
-    ceps = np.fft.irfft(log_spec, axis=1)
-    # Quefrency range covering 70–350 Hz F0.
-    lo, hi = int(SAMPLE_RATE / 350), int(SAMPLE_RATE / 70)
-    hi = min(hi, ceps.shape[1] - 1)
-    if hi <= lo:
-        return 0.0
-    band = ceps[:, lo:hi]
-
-    counts = 0
-    for row in band:
-        if row.size < 5:
-            continue
-        peak = row.max()
-        if peak <= 0:
-            continue
-        # Peaks within 65% of the strongest, separated enough not to be the
-        # same peak or its octave.
-        strong = np.where(row > 0.65 * peak)[0]
-        if strong.size < 2:
-            continue
-        if (strong.max() - strong.min()) > 12:
-            counts += 1
-    return float(counts / band.shape[0] * 100.0)
+    ambiguous = (v > 0.15) & (v < 0.45)
+    return float(ambiguous.mean() * 100.0)

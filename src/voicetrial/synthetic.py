@@ -147,13 +147,32 @@ def _babble(n: int, rng: np.random.Generator, carrier: np.ndarray) -> np.ndarray
     return tiled * (0.6 + 0.4 * np.sin(2 * np.pi * 4.0 * t))
 
 
+def _television(n: int, rng: np.random.Generator, carrier: np.ndarray) -> np.ndarray:
+    """Television: babble PLUS a music/effects bed and a wider band.
+
+    Previously this and "office chatter" both fell through to `_babble`, i.e.
+    they were the SAME signal under two labels — and the confusion matrix duly
+    showed 14 TV->chatter and 11 chatter->TV errors. That was an unlearnable
+    distinction created by the generator, not a weakness of the classifier.
+    A real television carries scored music, effects and broadcast compression;
+    office chatter does not.
+    """
+    speech = _babble(n, rng, carrier)
+    bed = _music(n, rng)
+    sparkle = _hiss(n, rng)
+    mix = 0.6 * speech + 0.3 * (bed / (_rms(bed) + 1e-9)) * _rms(speech) \
+        + 0.10 * (sparkle / (_rms(sparkle) + 1e-9)) * _rms(speech)
+    # Broadcast compression: far less dynamic range than a room of talkers.
+    return np.tanh(2.2 * mix / (_rms(mix) + 1e-9)) * _rms(mix)
+
+
 NOISE_MAKERS = {
     "static": _hiss,
     "road noise": _road,
     "hum": _hum,
     "music": _music,
     "office chatter": None,   # needs the carrier; handled in `render`
-    "television": None,
+    "television": None,       # ditto, but a different mix — see _television
 }
 
 
@@ -194,7 +213,9 @@ def render(
 
     if cond.noise_present and cond.snr_db is not None:
         maker = NOISE_MAKERS.get(cond.noise_type)
-        if maker is None:
+        if cond.noise_type == "television":
+            noise = _television(x.size, rng, speech)
+        elif maker is None:
             noise = _babble(x.size, rng, speech)
         else:
             noise = maker(x.size, rng)

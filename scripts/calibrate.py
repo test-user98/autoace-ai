@@ -23,6 +23,7 @@ from voicetrial.synthetic import RNG_SEED, build_conditions, render  # noqa: E40
 
 RAW = Path(__file__).resolve().parents[1] / "data" / "raw"
 FEATURES = [
+    "hf_ratio",
     "speech_ratio", "longest_silence_s", "snr_db", "noise_floor_dbfs",
     "speech_level_dbfs", "clipping_pct", "bandwidth_hz", "dropout_pct",
     "residual_centroid_hz", "residual_flatness", "residual_harmonicity",

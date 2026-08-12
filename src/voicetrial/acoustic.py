@@ -205,13 +205,33 @@ class AcousticPredictor:
                 "source": source,
             }
 
-        # Tone is not implemented. Reported honestly rather than guessed.
-        row["emotional_tone"] = "neutral"
-        row["emotional_intensity"] = "low"
-        evidence["fields"]["emotional_tone"] = {
-            "value": "neutral",
-            "source": "NOT IMPLEMENTED — placeholder, not a prediction",
-        }
+        # Tone from the dimensional SER model. Falls back to a declared
+        # placeholder rather than a guess if the model cannot load.
+        try:
+            from .tone import analyse
+
+            t = analyse(audio.samples)
+            row["emotional_tone"] = t.tone
+            row["emotional_intensity"] = t.intensity
+            for f, val in (("emotional_tone", t.tone), ("emotional_intensity", t.intensity)):
+                evidence["fields"][f] = {
+                    "value": val,
+                    "arousal": round(t.arousal, 3),
+                    "valence": round(t.valence, 3),
+                    "dominance": round(t.dominance, 3),
+                    "chunks": t.n_chunks,
+                    "source": "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim",
+                    "note": "arousal validated against intensity on n=3; the "
+                            "valence axis DISAGREES with all three provided "
+                            "labels — see the memo",
+                }
+        except Exception as exc:
+            row["emotional_tone"] = "neutral"
+            row["emotional_intensity"] = "low"
+            evidence["fields"]["emotional_tone"] = {
+                "value": "neutral",
+                "source": f"SER unavailable ({type(exc).__name__}) — placeholder",
+            }
 
         # Confidence reflects only what was actually measured. The two tone
         # fields are unimplemented, so the ceiling is 6/8 of the schema.

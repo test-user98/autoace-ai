@@ -76,6 +76,7 @@ image = (
         "torch>=2.4",
         "torchaudio>=2.4",
         "pyannote.audio>=3.3",
+        "transformers>=5.0",
     )
     .env({"PYTHONPATH": "/root/src"})
     # Local source must come last in the chain: it is mounted at runtime, so no

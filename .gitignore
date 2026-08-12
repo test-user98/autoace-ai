@@ -16,3 +16,4 @@ next-env.d.ts
 .env*.local
 tsbuildinfo
 *.tsbuildinfo
+data/raw/labels.csv

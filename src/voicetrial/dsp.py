@@ -219,7 +219,16 @@ def measure(x: np.ndarray) -> Analysis:
     speech_level_dbfs = float(frame_db[mask].mean()) if mask.any() else noise_floor_dbfs
 
     # --- quality, measured on the SPEECH estimate only ----------------------
-    clipping_pct = float((np.abs(x) > 0.985).mean() * 100.0)
+    # Clipping must be detected by WAVEFORM FLATNESS, not by an absolute
+    # amplitude threshold. An audit showed the previous `|x| > 0.985` test read
+    # ~0.000 at every clipping level, because clipped audio is routinely
+    # normalised afterwards — the flat top survives, the absolute level does not.
+    # Count samples sitting at the clip's own extreme, then require repetition.
+    peak_abs = float(np.abs(x).max()) + EPS
+    at_rail = np.abs(x) >= 0.98 * peak_abs
+    # A true clip is a RUN of railed samples; isolated peaks are just peaks.
+    runs = np.convolve(at_rail.astype(np.float32), np.ones(3), mode="same") >= 3
+    clipping_pct = float(runs.mean() * 100.0)
 
     speech_spec = clean[mask].mean(axis=0) if mask.any() else clean.mean(axis=0)
     cumulative = np.cumsum(speech_spec ** 2)

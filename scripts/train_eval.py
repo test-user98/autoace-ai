@@ -62,6 +62,7 @@ TASKS = {
 def build_dataset(n: int) -> tuple[np.ndarray, list, np.ndarray]:
     rng = np.random.default_rng(RNG_SEED)
     real = [load(f).samples[: 20 * 16000] for f in sorted(RAW.glob("*.ogg"))]
+    globals()["real"] = real
     if not real:
         raise SystemExit("no carrier audio in data/raw")
     # Expand 3 real voices into ~18 acoustically distinct ones. Without this the
@@ -81,64 +82,81 @@ def build_dataset(n: int) -> tuple[np.ndarray, list, np.ndarray]:
         distractor = carriers[j]
         a = asdict(measure(render(speech, cond, rng, distractor)))
         feats.append([a[k] for k in FEATURES])
-        groups.append(i % len(carriers))
+        # ROOT carrier, not the resampled variant. pseudo_speakers is
+        # carrier-major, so variant // per_carrier is the real recording. An
+        # audit proved that holding out variants leaves every real voice on both
+        # sides of the split: a probe identified the source recording of a
+        # "held-out" sample at 0.922 (chance 0.333).
+        groups.append((i % len(carriers)) // max(1, len(carriers) // len(real)))
     return np.nan_to_num(np.array(feats, dtype=float)), conds, np.array(groups)
 
 
 def main() -> None:
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 600
     print(f"generating {n} synthetic clips (seed {RNG_SEED})…")
-    X, conds, _groups = build_dataset(n)
+    X, conds, groups = build_dataset(n)
 
-    # Deterministic split. Grouping by carrier would leave only 3 groups, so a
-    # random split is used and the carrier index is fed in as nothing — the
-    # features contain no speaker identity, and conditions are drawn
-    # independently of the carrier.
-    rng = np.random.default_rng(RNG_SEED + 1)
-    idx = rng.permutation(len(X))
-    cut = int(0.7 * len(X))
-    tr, te = idx[:cut], idx[cut:]
-    print(f"train {len(tr)}  test {len(te)}\n")
+    # ROOT-CARRIER HOLDOUT is the only valid protocol here. A random split and a
+    # variant-level "speaker" split both leave all three real recordings on both
+    # sides, and both inflate every score. Reported numbers are the mean over
+    # folds, each holding out one entire real recording.
+    print(f"root-carrier folds: {sorted(set(groups.tolist()))}\n")
 
     MODEL_DIR.mkdir(exist_ok=True)
     summary = []
 
     for field, extract in TASKS.items():
         y = np.array([extract(c) for c in conds])
-        ytr, yte = y[tr], y[te]
-        if len(set(ytr)) < 2:
-            print(f"{field}: only one class present — skipped")
-            continue
+        # Majority-class baseline: the number every accuracy must be read
+        # against. `noise_present` is 87% "yes" by construction, so 0.99 there is
+        # a far smaller claim than it appears.
+        vals, cnts = np.unique(y, return_counts=True)
+        baseline = float(cnts.max() / cnts.sum())
 
-        clf = HistGradientBoostingClassifier(
+        fold_acc, fold_f1, cms = [], [], []
+        for g in sorted(set(groups.tolist())):
+            tr, te = groups != g, groups == g
+            if len(set(y[tr])) < 2 or te.sum() == 0:
+                continue
+            ytr, yte = y[tr], y[te]
+
+            clf = HistGradientBoostingClassifier(
             max_iter=300, learning_rate=0.08, max_depth=6,
             random_state=RNG_SEED, early_stopping=False,
             # audio_quality classes are imbalanced (few "clear"); without this
             # the minority class is traded away for overall accuracy.
             class_weight="balanced",
         )
-        clf.fit(X[tr], ytr)
-        pred = clf.predict(X[te])
+            clf.fit(X[tr], ytr)
+            pred = clf.predict(X[te])
+            fold_acc.append(accuracy_score(yte, pred))
+            fold_f1.append(f1_score(yte, pred, average="macro"))
+            cms.append(confusion_matrix(yte, pred, labels=sorted(set(y))))
 
-        acc = accuracy_score(yte, pred)
-        f1 = f1_score(yte, pred, average="macro")
+        if not fold_acc:
+            print(f"{field}: insufficient class coverage — skipped")
+            continue
+        acc, f1 = float(np.mean(fold_acc)), float(np.mean(fold_f1))
         labels = sorted(set(y))
-        cm = confusion_matrix(yte, pred, labels=labels)
+        cm = sum(cms)
 
         print(f"=== {field}")
-        print(f"    accuracy {acc:.3f}   macro-F1 {f1:.3f}   (n_test={len(yte)})")
+        print(f"    accuracy {acc:.3f}   macro-F1 {f1:.3f}   "
+              f"baseline {baseline:.3f}   folds {[round(a, 3) for a in fold_acc]}")
         width = max(len(str(x)) for x in labels) + 1
         print("    " + " " * width + "pred:" + "".join(f"{str(x)[:10]:>12}" for x in labels))
         for i, lab in enumerate(labels):
             print(f"    {str(lab):<{width}}" + "     " + "".join(f"{v:>12}" for v in cm[i]))
         print()
-        summary.append((field, acc, f1))
+        summary.append((field, acc, f1, baseline))
 
     print("=" * 58)
-    print(f"{'field':<32}{'accuracy':>10}{'macro-F1':>12}")
-    for field, acc, f1 in summary:
+    print(f"{'field':<30}{'accuracy':>10}{'macro-F1':>10}{'baseline':>10}{'lift':>8}")
+    for field, acc, f1, base in summary:
         flag = "  <-- below 0.90" if acc < 0.90 else ""
-        print(f"{field:<32}{acc:>10.3f}{f1:>12.3f}{flag}")
+        print(f"{field:<30}{acc:>10.3f}{f1:>10.3f}{base:>10.3f}{acc - base:>+8.3f}{flag}")
+    print("\nRoot-carrier holdout: each fold trains without one entire real")
+    print("recording. Accuracy must be read against the majority baseline.")
 
 
 if __name__ == "__main__":

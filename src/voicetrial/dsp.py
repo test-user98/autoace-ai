@@ -377,3 +377,49 @@ def _overlap_ratio(fr: np.ndarray, mask: np.ndarray) -> float:
         return 0.0
     ambiguous = (v > 0.15) & (v < 0.45)
     return float(ambiguous.mean() * 100.0)
+
+
+def denoise(x: np.ndarray) -> np.ndarray:
+    """Return a time-domain speech estimate with background noise suppressed.
+
+    Used to CLEAN THE CARRIERS for the synthetic set. call_002 already contains
+    television noise and call_003 contains static, so a synthetic clip labelled
+    "static at 12 dB" built on call_002 actually contains television + static.
+    That is label noise across the whole training set, and it is measurable:
+    training on the raw carriers predicts "office chatter" for call_003's static,
+    while training on the one genuinely clean carrier recovers it.
+
+    Discarding the contaminated carriers is not an option — root-carrier holdout
+    needs at least two carriers, and only call_001 is labelled no-noise. So they
+    are cleaned instead, which keeps all three folds AND removes the label noise.
+
+    Spectral subtraction with the original phase. Imperfect by construction, but
+    residual noise well below the levels we then mix in at is far better than
+    training on a source whose label is wrong.
+    """
+    mask, _, _ = voice_activity(x)
+    fr = _frames(x) * np.hanning(FRAME)[None, :]
+    spec = np.fft.rfft(fr, n=NFFT, axis=1)
+    mag, phase = np.abs(spec), np.angle(spec)
+
+    n = min(len(mask), len(mag))
+    mag, phase, mask = mag[:n], phase[:n], mask[:n]
+
+    quiet = mag[~mask]
+    noise = quiet.mean(axis=0) if len(quiet) >= 3 else np.percentile(mag, 10.0, axis=0)
+
+    clean_mag = np.maximum(mag - 1.5 * noise[None, :], 0.02 * mag)
+    frames = np.fft.irfft(clean_mag * np.exp(1j * phase), n=NFFT, axis=1)[:, :FRAME]
+
+    out = np.zeros(n * HOP + FRAME, dtype=np.float64)
+    norm = np.zeros_like(out)
+    window = np.hanning(FRAME)
+    for i in range(n):
+        out[i * HOP : i * HOP + FRAME] += frames[i] * window
+        norm[i * HOP : i * HOP + FRAME] += window ** 2
+    out = out / np.maximum(norm, 1e-6)
+
+    peak = np.abs(out).max()
+    if peak > 0:
+        out = out * (np.abs(x).max() / peak)
+    return out[: len(x)].astype(np.float32)

@@ -62,7 +62,31 @@ TASKS = {
 
 def build_dataset(n: int) -> tuple[np.ndarray, list, np.ndarray]:
     rng = np.random.default_rng(RNG_SEED)
-    real = [load(f).samples[: 20 * 16000] for f in sorted(RAW.glob("*.ogg"))]
+    # CARRIER CONTAMINATION: call_002 already contains TV noise and call_003
+    # contains static, so a synthetic clip labelled "static at 12 dB" built on
+    # call_002 actually contains TV + static. That is label noise across the
+    # whole training set, and it is measurable: training on all three carriers
+    # predicts "office chatter" for call_003's static (1/3), while training on
+    # the one carrier labelled no-noise recovers it (2/3).
+    #
+    # Only call_001 is labelled background_noise_present=false, so it is the
+    # only clean carrier available. Set VOICETRIAL_ALL_CARRIERS=1 to compare.
+    import os
+
+    from voicetrial.dsp import denoise
+
+    paths = sorted(RAW.glob("*.ogg"))
+    real = []
+    for f in paths:
+        samples = load(f).samples[: 20 * 16000]
+        # Denoise every carrier. call_001 is already clean so this is close to a
+        # no-op there; on call_002 and call_003 it removes the baked-in
+        # television and static that would otherwise mislabel the training set.
+        if not os.environ.get("VOICETRIAL_RAW_CARRIERS"):
+            samples = denoise(samples)
+        real.append(samples)
+    print(f"carriers: {[p.stem for p in paths]} "
+          f"({'denoised' if not os.environ.get('VOICETRIAL_RAW_CARRIERS') else 'RAW'})")
     globals()["real"] = real
     if not real:
         raise SystemExit("no carrier audio in data/raw")

@@ -11,6 +11,9 @@ import ValidationReport from "./ValidationReport";
 type Phase = "idle" | "uploading" | "running" | "done" | "error";
 
 const POLL_MS = 2000;
+// Consecutive poll failures tolerated before declaring the batch lost.
+// 15 x 2 s = 30 s of sustained failure, well past any transient blip.
+const MAX_POLL_FAILURES = 15;
 
 export default function BatchRunner() {
   const [file, setFile] = useState<File | null>(null);
@@ -25,6 +28,7 @@ export default function BatchRunner() {
   // would overlap the next one, and two polls both seeing "done" would each try
   // to delete the blob.
   const polling = useRef(false);
+  const failures = useRef(0);
 
   const stopTimer = useCallback(() => {
     if (timer.current) clearInterval(timer.current);
@@ -92,6 +96,7 @@ export default function BatchRunner() {
         if ("status" in payload && payload.status === "running") return;
 
         stopTimer();
+        failures.current = 0; // a good response clears the streak
         if ("status" in payload && payload.status === "done") {
           setResult(payload);
           setPhase("done");
@@ -102,9 +107,24 @@ export default function BatchRunner() {
         setPhase("error");
         setMessage(`Batch failed: ${detail}`);
       } catch (error) {
+        // A single failed poll must NOT kill a run that is still processing on
+        // the server. Transient blips are ordinary over a multi-minute batch,
+        // and aborting on the first one destroyed work that was fine — the
+        // longer the batch, the more polls, the likelier the false abort.
+        // Tolerate a short streak, and say what actually happened.
+        failures.current += 1;
+        if (failures.current < MAX_POLL_FAILURES) {
+          setMessage(
+            `Connection hiccup (${failures.current}/${MAX_POLL_FAILURES}) — still processing…`,
+          );
+          return;
+        }
         stopTimer();
         setPhase("error");
-        setMessage(`Lost contact with the batch: ${(error as Error).message}`);
+        setMessage(
+          `Lost contact after ${MAX_POLL_FAILURES} consecutive failures: ` +
+            `${(error as Error).message}. The batch may still be running on the server.`,
+        );
       } finally {
         polling.current = false;
       }

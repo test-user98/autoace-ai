@@ -17,10 +17,7 @@ from pathlib import Path
 
 from .ingest import DecodeError, load
 from .manifest import BatchReport, parse_batch
-from .predict import Predictor, StubPredictor  # noqa: F401
-from .schema import Prediction
-
-SCHEMA_FIELDS = list(Prediction.model_fields)
+from .predict import Predictor, StubPredictor
 
 # Populated when the real predictor cannot load; surfaced in the result.
 _FALLBACK_REASON: list[str] = []
@@ -107,16 +104,14 @@ class RunResult:
 def run_batch(folder: Path, predictor: Predictor | None = None) -> RunResult:
     """Validate a batch folder, then predict each valid item."""
     if predictor is None:
-        # Real predictor when the models are present; the stub only as a
-        # fallback so a missing artifact degrades rather than fails the batch.
         try:
             from .acoustic import AcousticPredictor
 
             predictor = AcousticPredictor()
         except Exception as exc:
-            # Never swallow this. A silent fall back to the stub is how a
-            # deployment ends up serving constants while reporting success —
-            # the failure must be visible in the result, not just in a log.
+            # Degrade to the stub so a missing artifact does not fail the batch,
+            # but never swallow the reason: a silent fall back is how a
+            # deployment ends up serving constants while reporting success.
             predictor = StubPredictor()
             _FALLBACK_REASON.append(f"{type(exc).__name__}: {exc}")
     report = parse_batch(folder)

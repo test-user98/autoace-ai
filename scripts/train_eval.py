@@ -20,6 +20,7 @@ Discipline that makes the numbers mean something:
 
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -28,11 +29,11 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sklearn.ensemble import HistGradientBoostingClassifier  # noqa: E402
 import joblib  # noqa: E402
+from sklearn.ensemble import HistGradientBoostingClassifier  # noqa: E402
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score  # noqa: E402
 
-from voicetrial.dsp import measure  # noqa: E402
+from voicetrial.dsp import denoise, measure  # noqa: E402
 from voicetrial.ingest import load  # noqa: E402
 from voicetrial.synthetic import (  # noqa: E402
     RNG_SEED, build_conditions, pseudo_speakers, render,
@@ -62,32 +63,23 @@ TASKS = {
 
 def build_dataset(n: int) -> tuple[np.ndarray, list, np.ndarray]:
     rng = np.random.default_rng(RNG_SEED)
-    # CARRIER CONTAMINATION: call_002 already contains TV noise and call_003
-    # contains static, so a synthetic clip labelled "static at 12 dB" built on
-    # call_002 actually contains TV + static. That is label noise across the
-    # whole training set, and it is measurable: training on all three carriers
-    # predicts "office chatter" for call_003's static (1/3), while training on
-    # the one carrier labelled no-noise recovers it (2/3).
-    #
-    # Only call_001 is labelled background_noise_present=false, so it is the
-    # only clean carrier available. Set VOICETRIAL_ALL_CARRIERS=1 to compare.
-    import os
-
-    from voicetrial.dsp import denoise
-
+    # CARRIER CONTAMINATION: call_002 has TV noise and call_003 static baked in,
+    # so a synthetic clip labelled "static at 12 dB" built on call_002 actually
+    # contains TV + static — label noise across the whole training set, and
+    # measurable: on raw carriers the model predicts "office chatter" for
+    # call_003's static (1/3), denoised it recovers it (2/3). Only call_001 is
+    # labelled background_noise_present=false, so denoising every carrier is what
+    # keeps all three folds. Set VOICETRIAL_RAW_CARRIERS=1 to compare.
+    denoise_carriers = not os.environ.get("VOICETRIAL_RAW_CARRIERS")
     paths = sorted(RAW.glob("*.ogg"))
     real = []
     for f in paths:
         samples = load(f).samples[: 20 * 16000]
-        # Denoise every carrier. call_001 is already clean so this is close to a
-        # no-op there; on call_002 and call_003 it removes the baked-in
-        # television and static that would otherwise mislabel the training set.
-        if not os.environ.get("VOICETRIAL_RAW_CARRIERS"):
+        if denoise_carriers:
             samples = denoise(samples)
         real.append(samples)
     print(f"carriers: {[p.stem for p in paths]} "
-          f"({'denoised' if not os.environ.get('VOICETRIAL_RAW_CARRIERS') else 'RAW'})")
-    globals()["real"] = real
+          f"({'denoised' if denoise_carriers else 'RAW'})")
     if not real:
         raise SystemExit("no carrier audio in data/raw")
     # Expand 3 real voices into ~18 acoustically distinct ones. Without this the
@@ -146,12 +138,12 @@ def main() -> None:
             ytr, yte = y[tr], y[te]
 
             clf = HistGradientBoostingClassifier(
-            max_iter=300, learning_rate=0.08, max_depth=6,
-            random_state=RNG_SEED, early_stopping=False,
-            # audio_quality classes are imbalanced (few "clear"); without this
-            # the minority class is traded away for overall accuracy.
-            class_weight="balanced",
-        )
+                max_iter=300, learning_rate=0.08, max_depth=6,
+                random_state=RNG_SEED, early_stopping=False,
+                # audio_quality classes are imbalanced (few "clear"); without
+                # this the minority class is traded away for overall accuracy.
+                class_weight="balanced",
+            )
             clf.fit(X[tr], ytr)
             pred = clf.predict(X[te])
             fold_acc.append(accuracy_score(yte, pred))

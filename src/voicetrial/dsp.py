@@ -12,9 +12,8 @@ respects them:
   is split into estimated speech and estimated noise residual first. Quality is
   measured on the speech estimate; noise is measured on the residual. They read
   different arrays, so one cannot leak into the other.
-* **"do not infer frustration solely from loudness"** — no level feature reaches
-  the tone decision at all; tone is Phase 2 and consumes prosody z-scored against
-  the speaker's own baseline.
+* **"do not infer frustration solely from loudness"** — no level feature computed
+  here reaches the tone decision at all (see `tone.py`).
 """
 
 from __future__ import annotations
@@ -149,8 +148,8 @@ def _longest_run(flags: np.ndarray) -> float:
 
 
 def _smooth(mask: np.ndarray, width: int) -> np.ndarray:
-    """Close gaps shorter than `width` frames, then drop islands shorter than
-    half that — removes both spurious gaps and spurious detections."""
+    """Close interior gaps shorter than `width` frames, so a speech tail or a
+    single-frame hole inside a word does not read as silence."""
     out = mask.copy()
     n = len(out)
     i = 0
@@ -219,11 +218,10 @@ def measure(x: np.ndarray) -> Analysis:
     speech_level_dbfs = float(frame_db[mask].mean()) if mask.any() else noise_floor_dbfs
 
     # --- quality, measured on the SPEECH estimate only ----------------------
-    # Clipping must be detected by WAVEFORM FLATNESS, not by an absolute
-    # amplitude threshold. An audit showed the previous `|x| > 0.985` test read
-    # ~0.000 at every clipping level, because clipped audio is routinely
-    # normalised afterwards — the flat top survives, the absolute level does not.
-    # Count samples sitting at the clip's own extreme, then require repetition.
+    # Clipping is detected by WAVEFORM FLATNESS, never by an absolute amplitude
+    # threshold: the previous `|x| > 0.985` test read ~0.000 at every clipping
+    # level, because clipped audio is routinely normalised afterwards — the flat
+    # top survives, the absolute level does not.
     peak_abs = float(np.abs(x).max()) + EPS
     at_rail = np.abs(x) >= 0.98 * peak_abs
     # A true clip is a RUN of railed samples; isolated peaks are just peaks.
@@ -235,20 +233,17 @@ def measure(x: np.ndarray) -> Analysis:
     total = cumulative[-1] + EPS
     bandwidth_hz = float(freqs[np.searchsorted(cumulative, 0.95 * total)])
 
-    # Dropouts: frames inside speech regions that collapse toward the floor —
-    # packet loss and gating artefacts, not pauses.
-    # Measured against an ABSOLUTE floor. The previous version compared to the
-    # clip's own noise floor, which additive noise raises — so it scored AUC
-    # 0.84 for *noise_present*, a field it is unrelated to. It was measuring
-    # noise, not dropouts.
-    # Relative to the speech level, not to an absolute floor: a dropout is a
-    # hole in speech that is present, which stays true under background noise.
-    # Dropouts are SHORT holes punched into speech. Counting every frame below
-    # the speech median instead counted natural conversational pauses: on the
-    # real clips that read 62.9% / 21.9% / 35.4% and drove all three to
-    # `severely_impaired`, when all three are labelled `clear`. Packet loss lasts
-    # tens of milliseconds; a turn-taking pause lasts hundreds. Bound the run
-    # length and the metric measures the fault instead of the conversation.
+    # Dropouts: short holes punched into speech (packet loss, gating), counted
+    # only inside the speech span. Two findings are load-bearing here:
+    #  * The reference is the SPEECH MEDIAN, not the clip's noise floor. Additive
+    #    noise raises the floor, so the floor-relative version scored AUC 0.84 for
+    #    *noise_present* — it was measuring noise, not dropouts.
+    #  * Runs are bounded to <= 250 ms. Unbounded, this counted turn-taking
+    #    pauses: 62.9% / 21.9% / 35.4% on the real clips, forcing all three to
+    #    `severely_impaired` when all three are labelled `clear`. Packet loss
+    #    lasts tens of milliseconds; a conversational pause lasts hundreds.
+    # Events are counted as well as duration — many short holes and a few long
+    # ones are different failures.
     speech_span = np.where(mask)[0]
     dropout_pct = 0.0
     dropout_events = 0.0
@@ -288,14 +283,14 @@ def measure(x: np.ndarray) -> Analysis:
     rolloff_99 = float(freqs[np.searchsorted(cum, 0.99 * tot)])
 
     # Spectral tilt: dB per decade across the speech band. Lowpassing steepens it.
-    band = (freqs >= 300) & (freqs < 7000)
-    tilt = float(np.polyfit(np.log10(freqs[band] + 1.0), _db(sp_pow[band]), 1)[0])
+    tilt_band = (freqs >= 300) & (freqs < 7000)
+    tilt = float(
+        np.polyfit(np.log10(freqs[tilt_band] + 1.0), _db(sp_pow[tilt_band]), 1)[0]
+    )
 
     # Crest factor: clipping flattens peaks, so peak-to-RMS collapses.
     crest_db = float(_db(np.max(x ** 2) + EPS) - _db((x ** 2).mean() + EPS))
 
-    # Count dropout *events*, not just their duration — a few long gaps and many
-    # short ones are different failures.
     level_range_db = float(np.percentile(frame_db, 95) - np.percentile(frame_db, 5))
 
     # --- noise character, measured on the RESIDUAL only ---------------------
@@ -397,19 +392,17 @@ def denoise(x: np.ndarray) -> np.ndarray:
     """Return a time-domain speech estimate with background noise suppressed.
 
     Used to CLEAN THE CARRIERS for the synthetic set. call_002 already contains
-    television noise and call_003 contains static, so a synthetic clip labelled
-    "static at 12 dB" built on call_002 actually contains television + static.
-    That is label noise across the whole training set, and it is measurable:
-    training on the raw carriers predicts "office chatter" for call_003's static,
-    while training on the one genuinely clean carrier recovers it.
-
-    Discarding the contaminated carriers is not an option — root-carrier holdout
-    needs at least two carriers, and only call_001 is labelled no-noise. So they
-    are cleaned instead, which keeps all three folds AND removes the label noise.
+    television noise and call_003 static, so a synthetic clip labelled "static at
+    12 dB" built on call_002 actually contains television + static — label noise
+    across the whole training set, and measurable: on raw carriers the model
+    predicts "office chatter" for call_003's static, on a clean carrier it
+    recovers it. Discarding the contaminated carriers is not an option, because
+    root-carrier holdout needs every carrier and only call_001 is labelled
+    no-noise.
 
     Spectral subtraction with the original phase. Imperfect by construction, but
-    residual noise well below the levels we then mix in at is far better than
-    training on a source whose label is wrong.
+    residual noise well below the levels we then mix in at beats training on a
+    source whose label is wrong.
     """
     mask, _, _ = voice_activity(x)
     fr = _frames(x) * np.hanning(FRAME)[None, :]

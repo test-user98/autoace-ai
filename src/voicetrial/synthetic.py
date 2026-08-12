@@ -150,12 +150,11 @@ def _babble(n: int, rng: np.random.Generator, carrier: np.ndarray) -> np.ndarray
 def _television(n: int, rng: np.random.Generator, carrier: np.ndarray) -> np.ndarray:
     """Television: babble PLUS a music/effects bed and a wider band.
 
-    Previously this and "office chatter" both fell through to `_babble`, i.e.
-    they were the SAME signal under two labels — and the confusion matrix duly
-    showed 14 TV->chatter and 11 chatter->TV errors. That was an unlearnable
-    distinction created by the generator, not a weakness of the classifier.
-    A real television carries scored music, effects and broadcast compression;
-    office chatter does not.
+    This and "office chatter" once both fell through to `_babble` — the SAME
+    signal under two labels, and the confusion matrix duly showed 14 TV->chatter
+    and 11 chatter->TV errors. That was an unlearnable distinction created by the
+    generator, not a weakness of the classifier. A real television carries scored
+    music, effects and broadcast compression; office chatter does not.
     """
     speech = _babble(n, rng, carrier)
     bed = _music(n, rng)
@@ -166,6 +165,9 @@ def _television(n: int, rng: np.random.Generator, carrier: np.ndarray) -> np.nda
     return np.tanh(2.2 * mix / (_rms(mix) + 1e-9)) * _rms(mix)
 
 
+# The seam for a new noise type: add a generator above and an entry here. A
+# `None` value means the generator needs the speech carrier, which `render`
+# supplies.
 NOISE_MAKERS = {
     "static": _hiss,
     "road noise": _road,
@@ -268,16 +270,16 @@ def build_conditions(n: int, rng: np.random.Generator) -> list[Condition]:
 def pseudo_speakers(carriers: list[np.ndarray], per_carrier: int = 6) -> list[np.ndarray]:
     """Expand a handful of real voices into many acoustically distinct ones.
 
-    Three carriers is not a speaker population, and it produced a specific,
-    measurable failure: with only three voices, the "second talker" in an overlap
-    condition is always one of the other two, so the classifier learned *which
-    voice is present* instead of *whether two voices are present*. Held-out-
-    speaker accuracy for `speaker_overlap_present` was 0.587 against 0.978 on a
-    random split — the gap IS the leakage.
+    Three carriers is not a speaker population, and it produced a measurable
+    failure: with only three voices the "second talker" in an overlap condition
+    is always one of the other two, so the classifier learned *which voice is
+    present* rather than *whether two voices are present*. Held-out-speaker
+    accuracy for `speaker_overlap_present` was 0.587 against 0.978 on a random
+    split — the gap IS the leakage.
 
-    Resampling shifts pitch and formants together, which is what actually makes
-    a voice sound like a different person. Each rate yields a distinct vocal
-    tract; the acoustic conditions layered on top are unchanged.
+    Resampling shifts pitch and formants together, which is what actually makes a
+    voice sound like a different person; the conditions layered on top are
+    unchanged.
     """
     rates = np.linspace(0.80, 1.25, per_carrier)
     out: list[np.ndarray] = []

@@ -19,7 +19,6 @@ without it every row fails with "decode failed").
 Deploy:  modal deploy modal_app.py      (see DEPLOY.md)
 """
 
-
 import hmac
 import io
 import json
@@ -47,15 +46,12 @@ MAX_UNPACKED_BYTES = 2 * 1024 * 1024 * 1024
 
 
 # --------------------------------------------------------------------------
-# GPU SEAM — deliberately not wired yet.
-#
-# Phase 1 (the six DSP fields) and today's stub are CPU-only. Phase 2 adds ASR +
-# diarization + SER, which is where a GPU starts paying for itself. To flip:
+# GPU SEAM — deliberately not wired. The whole pipeline runs on CPU inside the
+# cost ceiling, so a GPU would only make the measured $/audio-min in `timings` a
+# fiction. To flip it for a heavier model:
 #   1. set GPU = "T4"   (Turing/sm_75 — float16 or int8 only, never bf16)
-#   2. add the torch / faster-whisper / SER wheels to `image` below
+#   2. add the wheels to `image` below
 #   3. bake weights into the image in the same layer — never download at runtime
-# Left CPU-only on purpose: a GPU idling behind a stub predictor would make the
-# measured $/audio-min in `timings` a fiction rather than a measurement.
 # --------------------------------------------------------------------------
 GPU: str | None = None
 

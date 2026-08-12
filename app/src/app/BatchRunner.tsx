@@ -217,7 +217,6 @@ function RunSummary({ result }: { result: RunEnvelope }) {
         />
       </div>
 
-      {/* Measured, never assumed — PLAN.md §1.5 derives the cost model from these. */}
       <p className="muted" style={{ marginTop: 16 }}>
         Cost is derived from THIS run: {MODAL_CORES} CPU cores and {MODAL_GIB} GiB at
         Modal&apos;s published rates (${MODAL_CPU_CORE_SEC}/core/s, ${MODAL_MEM_GIB_SEC}/GiB/s,

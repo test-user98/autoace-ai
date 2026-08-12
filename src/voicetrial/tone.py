@@ -288,41 +288,20 @@ def _customer_by_pitch(samples: np.ndarray) -> tuple[np.ndarray, str]:
 def analyse(samples: np.ndarray, diarize: bool = False) -> ToneResult:
     """Tone and intensity.
 
-    `diarize` defaults to **False** — REVERTED on measurement.
+    `diarize` defaults to **False** — REVERTED on measurement. Full speaker
+    diarization (embeddings + clustering) drove the pipeline to **under 1x
+    realtime** (400+ s for 237.8 s of audio, against 11x for the
+    segmentation-only path), which breaks two hard constraints at once: the
+    dashboard times out, and at ~0.55x realtime the cost is ~$0.0038 per
+    audio-minute — **127% of the $0.003 ceiling**. It bought no accuracy either:
+    tone scored 1/3 with it and 1/3 without.
 
-    Full speaker diarization (embeddings + clustering) drove the pipeline to
-    **under 1x realtime**: 400+ s for 237.8 s of audio, against 11x realtime for
-    the segmentation-only path. That breaks two hard constraints at once —
-    the dashboard times out, and at ~0.55x realtime the cost is ~$0.0038 per
-    audio-minute, i.e. **127% of the $0.003 ceiling**.
-
-    It also bought no accuracy: tone scored 1/3 with it and 1/3 without.
-
-    So the trade is: ~100x the compute, over budget, for zero measured gain. The
-    3.7x widening of valence separation is real and interesting, but a signal
-    improvement that never reaches the output is not worth breaking the cost
-    constraint the brief treats as a hard requirement.
-
-    Kept in the code, off by default, because it becomes the right choice the
-    moment there is labelled tone data to convert that separation into accuracy.
-
-    Original rationale, still valid:
-
-    With real two-speaker diarization, isolating the customer widened valence
-    separation across the three clips **3.7x** — from a 0.09 range (0.502-0.596)
-    to 0.33 (0.438-0.766) — and corrected the hardest case: call_001 moved from
-    `satisfied` (the opposite pole) to `upset` (correct), valence 0.596 -> 0.438.
-
-    Headline accuracy is 1/3 either way, so this is shipped for SIGNAL QUALITY,
-    not for a score. Averaging emotion across a calm agent and an escalated
-    customer compresses exactly the axis the brief asks about; the remaining
-    error is in the threshold mapping, not the measurement.
-
-    Two earlier attempts failed for instrument reasons, not because the idea was
-    wrong: a pitch-split fallback (call_001's "customer" came back at F0 ~287 Hz)
-    and 4-way over-segmentation (a 3.9 s "customer" in a 31 s call). Pinning
-    `num_speakers=2` fixed the second — a phone call has two parties, which is
-    domain knowledge rather than a tuned parameter.
+    Kept in the code, off by default, because the signal gain is real and becomes
+    worth paying for the moment labelled tone data can convert it into accuracy:
+    isolating the customer widened valence separation across the three clips
+    3.7x (0.09 range -> 0.33) and moved call_001 from `satisfied` (the opposite
+    pole) to `upset` (correct). Averaging emotion across a calm agent and an
+    escalated customer compresses exactly the axis the brief asks about.
     """
     speech, source = (customer_audio(samples) if diarize else (samples, "whole clip"))
     arousal, dominance, valence, n = dimensions(speech)

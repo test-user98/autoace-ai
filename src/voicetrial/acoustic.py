@@ -32,6 +32,7 @@ from .ingest import Audio
 from .predict import Evidence
 from .schema import Prediction, coerce
 
+
 def _model_dir() -> Path:
     """Locate the trained models across local and container layouts.
 
@@ -56,7 +57,6 @@ def _model_dir() -> Path:
     )
 
 
-MODEL_DIR = None
 SYSTEM_VERSION = "0.2.0-acoustic"
 
 # Fraction of frames with 2+ concurrent speakers before a clip counts as
@@ -66,16 +66,12 @@ SYSTEM_VERSION = "0.2.0-acoustic"
 OVERLAP_FRAME_PCT = 1.0
 
 # Contiguous non-speech, per pyannote's speaker map rather than an energy floor.
-#
-# 3.0 s was wrong for conversational audio. pyannote measures gaps of 7.2 / 4.4 /
-# 8.5 s in the three real clips, and all three are labelled
-# `long_silence_present: false` — so ordinary turn-taking in these calls already
-# reaches 8.5 s. The brief asks for "an UNUSUALLY long period of silence or dead
-# air that may indicate a call-flow or audio problem", which is a different and
-# rarer thing. Set above the observed conversational range.
-#
-# Calibrated on n=3 and therefore provisional: this is the single threshold most
-# in need of re-fitting once more labelled audio exists.
+# 3.0 s was wrong for conversational audio: pyannote measures gaps of 7.2 / 4.4 /
+# 8.5 s in the three real clips, all labelled `long_silence_present: false`, so
+# ordinary turn-taking here already reaches 8.5 s. The brief asks for an
+# "UNUSUALLY long period of silence or dead air", a rarer thing — hence a
+# threshold above the observed conversational range. Also n=3, also provisional,
+# and the single threshold most in need of re-fitting.
 LONG_SILENCE_S = 10.0
 
 _MODELS: dict | None = None
@@ -83,6 +79,12 @@ _SEG = None
 
 
 def _load_models() -> dict:
+    """Load every trained field model, keyed by filename stem.
+
+    This is the seam for a new modelled field: `train_eval.py` writes
+    `<field>.joblib` and `predict()` emits whatever stems it finds, so adding one
+    means adding a task there plus the field on `Prediction` — nothing here.
+    """
     global _MODELS
     if _MODELS is None:
         import joblib

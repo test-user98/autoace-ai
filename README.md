@@ -28,6 +28,114 @@ Synthetic figures use **root-carrier holdout** — each fold trains without one
 entire real recording. Random splits and variant-level splits both leak and
 inflate every score; see `STATE.md`. Read every accuracy against its baseline.
 
+## Architecture
+
+Two planes, split by lifecycle. The dashboard is **always on** so a login never
+waits for a cold start; compute **scales to zero** so it bills only while a batch
+is running. Audio never leaves this infrastructure and reaches no third party.
+
+```mermaid
+flowchart LR
+    B["Browser<br/>evaluator"]
+
+    subgraph CP["Control plane · Vercel · always on"]
+        AUTH["Auth<br/>HMAC session cookie"]
+        API["API routes<br/>spawn + poll"]
+    end
+
+    BLOB[("Vercel Blob<br/>PRIVATE<br/>deleted after run")]
+
+    subgraph DP["Compute plane · Modal · scale to zero · CPU"]
+        WEB["Web endpoint<br/>token gated"]
+        RUN["Batch worker<br/>whole batch, one container"]
+    end
+
+    B -->|"1 · login"| AUTH
+    B -->|"2 · presigned upload<br/>bypasses the 4.5 MB function limit"| BLOB
+    B -->|"3 · start"| API
+    API -->|"4 · signed GET URL, 15 min, one pathname"| WEB
+    WEB -->|"5 · spawn"| RUN
+    RUN -->|"6 · fetch batch"| BLOB
+    API -->|"7 · poll until done"| WEB
+    B -->|"8 · results · CSV · JSON"| API
+```
+
+Why the indirection at step 2: a Vercel function body caps around 4.5 MB and one
+provided clip is already 2.8 MB, so the ZIP must go browser-to-blob directly.
+The blob is private, so Modal cannot read it unauthenticated — hence the
+short-lived signed URL at step 4 rather than a public link.
+
+## Batch workflow
+
+A single malformed file must never fail the batch, so every failure is captured
+per file and reported with a reason.
+
+```mermaid
+flowchart TD
+    Z["ZIP uploaded"] --> R["Resolve root<br/>descends wrapper dirs from zipping a folder"]
+    R --> M{"Manifest found?"}
+    M -->|no| E1["Batch error<br/>reported, nothing processed"]
+    M -->|yes| V["Validate against audio files"]
+
+    V --> REP["Validation report<br/>missing · unmatched · unsupported<br/>duplicate rows · name collisions · bad labels"]
+    V --> L["Per valid file"]
+
+    L --> D{"Decodes?"}
+    D -->|no| F["Row fails alone<br/>reason recorded"]
+    D -->|yes| P["Analyse"]
+    P -->|"model raises"| F
+    P -->|ok| OK["Prediction + evidence"]
+
+    F --> OUT["Results table · CSV · JSON<br/>original filenames preserved"]
+    OK --> OUT
+    REP --> OUT
+```
+
+## Per-clip analysis
+
+Two engines, chosen per field by what survives a held-out-speaker test. The
+speech/residual split is structural: quality and noise read **different arrays**,
+so "do not infer noise from poor audio quality" holds by construction rather than
+by a threshold behaving.
+
+```mermaid
+flowchart TD
+    A["ffmpeg → 16 kHz mono"] --> VAD["VAD<br/>energy AND periodicity"]
+    VAD --> SEP["Spectral subtraction"]
+
+    SEP --> CLEAN["Speech estimate"]
+    SEP --> RES["Noise residual"]
+
+    CLEAN --> QF["Quality features<br/>clipping · rolloff · tilt · dropout"]
+    RES --> NF["Noise features<br/>SNR · centroid · flatness · 4 Hz modulation"]
+
+    QF --> GBM["Gradient-boosted model per field"]
+    NF --> GBM
+    GBM --> F1["audio_quality"]
+    GBM --> F2["background_noise_present · _type · _severity"]
+
+    A --> PY["pyannote segmentation<br/>speaker-independent"]
+    PY --> F3["speaker_overlap_present"]
+    PY --> F4["long_silence_present"]
+
+    A --> SER["wav2vec2 SER<br/>arousal · valence"]
+    SER --> F5["emotional_intensity ← arousal"]
+    SER --> F6["emotional_tone ← valence + arousal"]
+
+    F1 --> OUT["9-field prediction<br/>+ evidence + confidence"]
+    F2 --> OUT
+    F3 --> OUT
+    F4 --> OUT
+    F5 --> OUT
+    F6 --> OUT
+```
+
+pyannote handles overlap and silence because the feature models could not: under
+held-out-speaker validation they scored 0.670 and 0.730, and one fold hit 0.485 —
+worse than a constant predictor. Three real voices cannot teach speaker
+independence; pyannote was trained on thousands.
+
+
 ## Quick start
 
 ```bash

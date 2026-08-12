@@ -5,8 +5,11 @@ description = "Emotional tone and background noise analysis for production call 
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "numpy>=2.0",
+    "pyannote-audio>=3.3",
     "pydantic>=2.9",
     "scikit-learn>=1.9.0",
+    "torch>=2.4",
+    "torchaudio>=2.4",
 ]
 
 [project.optional-dependencies]

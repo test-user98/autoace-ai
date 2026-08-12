@@ -33,7 +33,9 @@ from sklearn.metrics import accuracy_score, confusion_matrix, f1_score  # noqa: 
 
 from voicetrial.dsp import measure  # noqa: E402
 from voicetrial.ingest import load  # noqa: E402
-from voicetrial.synthetic import RNG_SEED, build_conditions, render  # noqa: E402
+from voicetrial.synthetic import (  # noqa: E402
+    RNG_SEED, build_conditions, pseudo_speakers, render,
+)
 
 RAW = Path(__file__).resolve().parents[1] / "data" / "raw"
 MODEL_DIR = Path(__file__).resolve().parents[1] / "models"
@@ -59,15 +61,24 @@ TASKS = {
 
 def build_dataset(n: int) -> tuple[np.ndarray, list, np.ndarray]:
     rng = np.random.default_rng(RNG_SEED)
-    carriers = [load(f).samples[: 20 * 16000] for f in sorted(RAW.glob("*.ogg"))]
-    if not carriers:
+    real = [load(f).samples[: 20 * 16000] for f in sorted(RAW.glob("*.ogg"))]
+    if not real:
         raise SystemExit("no carrier audio in data/raw")
+    # Expand 3 real voices into ~18 acoustically distinct ones. Without this the
+    # overlap classifier keys on speaker identity (held-out-speaker accuracy
+    # 0.587 vs 0.978 random) rather than on the presence of a second talker.
+    carriers = pseudo_speakers(real)
 
     conds = build_conditions(n, rng)
     feats, groups = [], []
     for i, cond in enumerate(conds):
         speech = carriers[i % len(carriers)]
-        distractor = carriers[(i + 1) % len(carriers)]
+        # Distractor drawn from a DIFFERENT speaker, chosen at random rather than
+        # the neighbouring index, so "who is talking" carries no information.
+        j = int(rng.integers(len(carriers)))
+        while j == i % len(carriers) and len(carriers) > 1:
+            j = int(rng.integers(len(carriers)))
+        distractor = carriers[j]
         a = asdict(measure(render(speech, cond, rng, distractor)))
         feats.append([a[k] for k in FEATURES])
         groups.append(i % len(carriers))

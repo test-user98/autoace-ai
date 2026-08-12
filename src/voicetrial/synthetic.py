@@ -263,3 +263,29 @@ def build_conditions(n: int, rng: np.random.Generator) -> list[Condition]:
             )
         )
     return conds
+
+
+def pseudo_speakers(carriers: list[np.ndarray], per_carrier: int = 6) -> list[np.ndarray]:
+    """Expand a handful of real voices into many acoustically distinct ones.
+
+    Three carriers is not a speaker population, and it produced a specific,
+    measurable failure: with only three voices, the "second talker" in an overlap
+    condition is always one of the other two, so the classifier learned *which
+    voice is present* instead of *whether two voices are present*. Held-out-
+    speaker accuracy for `speaker_overlap_present` was 0.587 against 0.978 on a
+    random split — the gap IS the leakage.
+
+    Resampling shifts pitch and formants together, which is what actually makes
+    a voice sound like a different person. Each rate yields a distinct vocal
+    tract; the acoustic conditions layered on top are unchanged.
+    """
+    rates = np.linspace(0.80, 1.25, per_carrier)
+    out: list[np.ndarray] = []
+    for c in carriers:
+        for r in rates:
+            n = int(c.size / r)
+            if n < SAMPLE_RATE:
+                continue
+            src = np.linspace(0, c.size - 1, n)
+            out.append(np.interp(src, np.arange(c.size), c).astype(np.float32))
+    return out

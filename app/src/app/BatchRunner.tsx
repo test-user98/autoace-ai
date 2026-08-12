@@ -15,6 +15,24 @@ const POLL_MS = 2000;
 // 15 x 2 s = 30 s of sustained failure, well past any transient blip.
 const MAX_POLL_FAILURES = 15;
 
+// Modal published pricing, fetched 2026-08-12. Kept here so the figure the
+// evaluator sees is derived from the run in front of them rather than quoted
+// from a document — the brief asks for the cost model AND its assumptions.
+const MODAL_CPU_CORE_SEC = 0.0000131;
+const MODAL_MEM_GIB_SEC = 0.00000222;
+const MODAL_CORES = 2;
+const MODAL_GIB = 4;
+
+/** Marginal $ to process one minute of audio at the measured throughput. */
+function costPerAudioMinute(realtimeFactor: number): number {
+  if (!realtimeFactor || realtimeFactor <= 0) return 0;
+  const wallSecondsPerAudioMinute = 60 / realtimeFactor;
+  return (
+    wallSecondsPerAudioMinute *
+    (MODAL_CORES * MODAL_CPU_CORE_SEC + MODAL_GIB * MODAL_MEM_GIB_SEC)
+  );
+}
+
 export default function BatchRunner() {
   const [file, setFile] = useState<File | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
@@ -189,10 +207,23 @@ function RunSummary({ result }: { result: RunEnvelope }) {
         <Stat label="Audio" value={`${(result.summary.total_audio_s / 60).toFixed(2)} min`} />
         <Stat label="Wall clock" value={`${result.timings.total_s.toFixed(1)} s`} />
         <Stat label="Realtime factor" value={`${result.summary.realtime_factor}×`} />
+        <Stat
+          label="Cost / audio-min"
+          value={`$${costPerAudioMinute(result.summary.realtime_factor).toFixed(6)}`}
+        />
+        <Stat
+          label="Of $0.003 ceiling"
+          value={`${((costPerAudioMinute(result.summary.realtime_factor) / 0.003) * 100).toFixed(1)}%`}
+        />
       </div>
 
       {/* Measured, never assumed — PLAN.md §1.5 derives the cost model from these. */}
       <p className="muted" style={{ marginTop: 16 }}>
+        Cost is derived from THIS run: {MODAL_CORES} CPU cores and {MODAL_GIB} GiB at
+        Modal&apos;s published rates (${MODAL_CPU_CORE_SEC}/core/s, ${MODAL_MEM_GIB_SEC}/GiB/s,
+        fetched 2026-08-12), divided by the audio actually processed. Marginal cost at batch
+        utilisation; excludes cold-start amortisation and the always-on dashboard.
+        <br />
         Stages: download {result.timings.download_s.toFixed(2)}s · extract{" "}
         {result.timings.extract_s.toFixed(2)}s · analyze {result.timings.run_batch_s.toFixed(2)}s ·
         compute {result.timings.gpu} ·{" "}

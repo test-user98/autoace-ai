@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Emotional tone and background noise analysis for production call audio"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "joblib>=1.5.3",
     "numpy>=2.0",
     "pyannote-audio>=3.3",
     "pydantic>=2.9",

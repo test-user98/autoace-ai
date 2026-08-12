@@ -29,6 +29,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sklearn.ensemble import HistGradientBoostingClassifier  # noqa: E402
+import joblib  # noqa: E402
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score  # noqa: E402
 
 from voicetrial.dsp import measure  # noqa: E402
@@ -148,6 +149,16 @@ def main() -> None:
         for i, lab in enumerate(labels):
             print(f"    {str(lab):<{width}}" + "     " + "".join(f"{v:>12}" for v in cm[i]))
         print()
+        # Persist a model trained on ALL folds — the shipped artifact. The
+        # reported metrics come from the held-out folds above, never from this.
+        final = HistGradientBoostingClassifier(
+            max_iter=300, learning_rate=0.08, max_depth=6,
+            random_state=RNG_SEED, early_stopping=False, class_weight="balanced",
+        )
+        final.fit(X, y)
+        joblib.dump({"model": final, "features": FEATURES,
+                     "holdout_accuracy": acc, "baseline": baseline},
+                    MODEL_DIR / f"{field}.joblib")
         summary.append((field, acc, f1, baseline))
 
     print("=" * 58)

@@ -68,11 +68,21 @@ image = (
         "numpy>=2.0",
         "pydantic>=2.9",
         "fastapi[standard]",
+        "scikit-learn>=1.9",
+        "joblib>=1.4",
+        # pyannote supplies speaker-independent overlap and silence. CPU only:
+        # it runs 80-144x realtime, so a GPU would add cost without buying
+        # anything the cost model needs.
+        "torch>=2.4",
+        "torchaudio>=2.4",
+        "pyannote.audio>=3.3",
     )
     .env({"PYTHONPATH": "/root/src"})
     # Local source must come last in the chain: it is mounted at runtime, so no
     # image layer may depend on it.
     .add_local_dir(LOCAL_SRC, "/root/src", ignore=["**/__pycache__", "**/*.pyc"])
+    # Trained models travel with the deploy — never fetched at runtime.
+    .add_local_dir(Path(__file__).parent / "models", "/root/models")
 )
 
 app = modal.App(APP_NAME, image=image)
@@ -190,7 +200,6 @@ def run_batch_remote(zip_url: str | None = None, zip_bytes: bytes | None = None)
     """Process one whole batch inside one container invocation."""
     global _INVOCATIONS
 
-    from voicetrial.predict import StubPredictor
     from voicetrial.runner import run_batch
 
     _INVOCATIONS += 1
@@ -215,7 +224,10 @@ def run_batch_remote(zip_url: str | None = None, zip_bytes: bytes | None = None)
         extract_s = time.perf_counter() - t0
 
         t0 = time.perf_counter()
-        result = run_batch(extracted, StubPredictor())
+        # No explicit predictor: run_batch selects AcousticPredictor when the
+        # models are present and records WHY if it cannot. Hardcoding the stub
+        # here silently overrode all of that.
+        result = run_batch(extracted)
         run_s = time.perf_counter() - t0
 
         return {
@@ -246,6 +258,9 @@ def run_batch_remote(zip_url: str | None = None, zip_bytes: bytes | None = None)
             # Emitted by the runner itself so the dashboard's downloads are the
             # runner's own output, never re-derived in TypeScript.
             "csv": result.to_csv(),
+            # Surfaces WHY the real predictor did not load. Without this the
+            # deployment silently serves stub constants and reports success.
+            "predictor_warning": getattr(result, "predictor_warning", None),
             "json": result.to_json(),
         }
     finally:
